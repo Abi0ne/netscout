@@ -1,0 +1,17 @@
+# Rust
+core/target/
+**/target/
+
+# Swift / Xcode
+apple/**/xcuserdata/
+apple/**/build/
+apple/libs/
+.DS_Store
+
+# Android
+android/.gradle/
+android/**/build/
+*.apk
+
+# UniFFI generated Swift is checked in; keep the rest clean.
+*.swp

@@ -1,0 +1,3 @@
+# UniFFI metadata (proc-macro mode). The `namespace` becomes the imported
+# module name on each platform (Swift: `import netscout_core`).
+namespace = "netscout_core"

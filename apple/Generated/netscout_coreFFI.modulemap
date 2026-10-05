@@ -1,0 +1,4 @@
+module netscout_coreFFI {
+    header "netscout_coreFFI.h"
+    export *
+}

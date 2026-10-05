@@ -1,0 +1,26 @@
+[workspace]
+# Only the Rust core is a workspace member. `apple/` (Swift) and `android/`
+# (Kotlin) live outside the Cargo workspace by design: they consume the core
+# as a prebuilt XCFramework / AAR, never as workspace members.
+resolver = "2"
+members = ["core"]
+exclude = ["apple", "android"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Release profile tuned for an FFI library. We deliberately do NOT set
+# `strip = "symbols"`: library-mode `uniffi-bindgen` extracts the interface
+# from the static symbol table (.symtab), and stripping it makes the cdylib
+# unreadable by bindgen (it would see zero metadata). A pure-engine cdylib
+# still loads via dlopen (which only needs .dynsym), so the size cost is
+# cosmetic. If a stripped artifact is ever wanted for distribution, generate
+# bindings from the unstripped lib first, then strip the final binary.
+[profile.release]
+codegen-units = 1
+lto = "fat"
+# Symbols intentionally NOT stripped (see comment above) — required by
+# `uniffi-bindgen generate --library <lib>` (library mode).
+panic = "abort"

@@ -1,0 +1,40 @@
+[package]
+name = "netscout-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Non-privileged LAN network scanner engine, shared across platforms via UniFFI."
+
+# rlib for `cargo test`; cdylib is the FFI artifact the XCFramework/AAR wraps.
+[lib]
+name = "netscout_core"
+crate-type = ["lib", "cdylib"]
+
+# The `uniffi-bindgen` binary target (proc-macro mode). Invoked as:
+#   netscout-core-bindgen generate --library <lib.so> --language swift|kotlin
+[[bin]]
+name = "netscout-core-bindgen"
+path = "src/bindgen.rs"
+
+[dependencies]
+# Async runtime + primitives. The Scanner owns a private multi-thread runtime
+# so probes run regardless of the (non-tokio) FFI thread that created it.
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "sync", "time", "net", "io-util"] }
+# CancellationToken (tokio_util::sync) used to make scans cancellable
+# (global + per-scan child tokens). Default features suffice: the `sync`
+# module is not behind a feature gate in tokio-util.
+tokio-util = "=0.7.19"
+# Low-level socket construction (domain/type/protocol, raw/icmp where allowed) for PlatformNet.
+socket2 = "=0.5.10"
+# FFI to OS networking primitives (getifaddrs, sysctl NET_RT_* route table)
+# used by the platform impls. Pinned to the version already in the workspace
+# lockfile.
+libc = "=0.2.190"
+# FFI: proc-macro derives (Record/Enum/Error/callback_interface) + bindgen `cli`.
+uniffi = { version = "=0.28.3", features = ["cli"] }
+# Parse/format CIDRs and expand a target list into concrete /32s.
+ipnet = "=2.12.2"
+# Ergonomic error enum; the `ScanError` type.
+thiserror = "=1.0.69"
+# (Re)serialization of records for cache/IPC; derive used on the public types.
+serde = { version = "=1.0.229", features = ["derive"] }
