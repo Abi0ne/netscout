@@ -5,15 +5,23 @@ import SwiftUI
 struct NetScoutApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ViewState private var model = ScanModel()
+    @ViewState private var updater = Updater()
 
     var body: some Scene {
         WindowGroup("NetScout") {
             RootView()
                 .environment(model)
+                .environment(updater)
                 .frame(minWidth: 900, minHeight: 520)
+                .task { await updater.check(quiet: true) }
         }
         .defaultSize(width: 1200, height: 720)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Controlla aggiornamenti…") {
+                    Task { await updater.check() }
+                }
+            }
             CommandGroup(after: .newItem) {
                 Button(model.isScanning ? "Ferma scansione" : "Avvia scansione") {
                     model.isScanning ? model.cancel() : model.startScan()

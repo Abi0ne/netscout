@@ -18,7 +18,7 @@ scripts/  bindgen, app bundle and data build automation
 | `core/` | Rust library crate `netscout-core`. Owns its own tokio runtime; streams results through the `ScanObserver` callback interface; cancellable; no root. |
 | `core/src/platform/` | `trait PlatformNet` + per-OS impls selected by `cfg(target_os)`. |
 | `apple/` | SwiftUI macOS app (SwiftPM, no Xcode project). Links `core` as an arm64 static library. See `apple/README.md`. |
-| `scripts/` | `generate-bindings.sh`, `build-app.sh`, `update-oui.sh` (refreshes `core/data/oui.tsv`, the embedded MAC-vendor table). |
+| `scripts/` | `generate-bindings.sh`, `build-app.sh`, `release.sh`, `make-icon.sh`, `update-oui.sh` (refreshes `core/data/oui.tsv`, the embedded MAC-vendor table). |
 | `android/` | Placeholder for the later Kotlin port. |
 
 ## Public core API (UniFFI surface)
@@ -52,4 +52,18 @@ cargo run --release --example scan -- --deep          # --quick | --standard | -
 ```
 scripts/generate-bindings.sh   # refresh the UniFFI bindings in apple/Sources
 scripts/build-app.sh           # build apple/build/NetScout.app (arm64)
+```
+
+## Versions and updates
+
+The version lives in `Cargo.toml` (`[workspace.package] version`); the app
+bundle, the window's status bar and the release tag all take it from there.
+
+The app checks the latest GitHub release at launch (and from *NetScout →
+Controlla aggiornamenti…*); when it is newer it offers to download it,
+verifies it and replaces itself. To publish a version:
+
+```
+# bump version in Cargo.toml, commit, then:
+scripts/release.sh [notes.md]  # build, zip, tag v<version>, push, gh release
 ```

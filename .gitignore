@@ -18,3 +18,5 @@ android/**/build/
 
 # SwiftPM
 apple/.build/
+# Release artifacts (scripts/release.sh)
+dist/

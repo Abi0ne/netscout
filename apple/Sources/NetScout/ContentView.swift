@@ -14,6 +14,7 @@ struct RootView: View {
             ProfilesView()
                 .tabItem { Label("Profili salvati", systemImage: "archivebox") }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .sheet(item: $model.comparison) { comparison in
             ComparisonView(comparison: comparison)
         }
