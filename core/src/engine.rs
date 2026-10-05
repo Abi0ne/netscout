@@ -11,9 +11,14 @@
 //!    attached to known hosts, and in-target addresses that answered ARP but
 //!    nothing else are reported too (devices that drop ping and every probed
 //!    port).
-//! 4. **Names** — mDNS, NetBIOS and reverse DNS for every discovered host,
-//!    concurrently, bounded by a deadline (see `names`); hosts that get a
-//!    name are re-emitted.
+//! 4. **Names and second look** — mDNS, NetBIOS and reverse DNS for every
+//!    discovered host, concurrently, bounded by a deadline (see `names`);
+//!    alongside, the ports that stayed silent on hosts now known to be up are
+//!    tried again with a longer deadline ([`recheck_timeout`]): slow embedded
+//!    stacks and Wi-Fi clients in power save often miss the first, short
+//!    window, and a longer one lets TCP retransmit the SYN. Only up hosts are
+//!    retried, so the sweep keeps its pace. Hosts that get a name or a port
+//!    are re-emitted.
 //! 5. **Classify** — each host's device type from the evidence gathered
 //!    (see `classify`); hosts whose type is now known are re-emitted.
 //! 6. **Finish** — `on_finished` with the summary. A cancelled scan stops at
@@ -52,6 +57,12 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(150);
 /// source.
 const NAME_CONCURRENCY: usize = 32;
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Deadline of the second look at silent ports: long enough for TCP to
+/// retransmit the SYN once or twice (macOS: after ~1 s, then ~2 s).
+fn recheck_timeout(timeout: Duration) -> Duration {
+    (timeout * 2).clamp(Duration::from_secs(2), Duration::from_secs(3))
+}
 
 /// Discovery ports per profile: common services across routers, computers,
 /// phones, printers, NAS, cameras and media devices.
@@ -128,6 +139,8 @@ struct Ctx {
     discovered: AtomicU32,
     open_ports: AtomicU32,
     hosts: Mutex<HashMap<Ipv4Addr, Host>>,
+    /// Ports of up hosts that neither accepted nor refused in the sweep.
+    silent: Mutex<HashMap<Ipv4Addr, Vec<u16>>>,
     last_progress: Mutex<Instant>,
 }
 
@@ -180,6 +193,7 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
         discovered: AtomicU32::new(0),
         open_ports: AtomicU32::new(0),
         hosts: Mutex::new(HashMap::new()),
+        silent: Mutex::new(HashMap::new()),
         last_progress: Mutex::new(Instant::now()),
     });
     ctx.report(ScanPhase::Probing, true);
@@ -225,7 +239,10 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
                 .await;
             drop(permit);
             let Some(found) = probed else { return };
-            if let Some(host) = found {
+            if let Some((host, silent)) = found {
+                if !silent.is_empty() {
+                    lock(&ctx.silent).insert(ip, silent);
+                }
                 ctx.add_host(host);
             }
             ctx.scanned.fetch_add(1, Ordering::Relaxed);
@@ -238,15 +255,17 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
     }
 
     ctx.report(ScanPhase::Resolving, true);
-    attach_arp(&ctx, &job.addrs);
+    attach_arp(&ctx, &job.addrs, job.ports);
     if cancel.is_cancelled() {
         return;
     }
-    if cancel
-        .run_until_cancelled(resolve_names(&ctx))
-        .await
-        .is_none()
-    {
+    let second_look = async {
+        tokio::join!(
+            resolve_names(&ctx),
+            recheck_silent_ports(&ctx, recheck_timeout(job.timeout), Arc::clone(&sockets)),
+        )
+    };
+    if cancel.run_until_cancelled(second_look).await.is_none() {
         return;
     }
     classify_hosts(&ctx, &gateways);
@@ -264,13 +283,13 @@ struct ProbeParams {
     per_host_concurrency: usize,
 }
 
-/// Probe one address; `Some(host)` if anything proved it up.
+/// Probe one address; `Some((host, silent ports))` if anything proved it up.
 async fn probe_host(
     ip: Ipv4Addr,
     p: ProbeParams,
     pinger: Option<&PingClient>,
     sockets: Arc<Semaphore>,
-) -> Option<Host> {
+) -> Option<(Host, Vec<u16>)> {
     let ping = async {
         match pinger {
             Some(c) => c.ping(ip, p.timeout).await.ok().flatten(),
@@ -283,33 +302,76 @@ async fn probe_host(
         return None;
     }
     let now = now_ms();
-    Some(Host {
+    let host = Host {
         ip: ip.to_string(),
         mac: None,
         vendor: None,
         hostnames: Vec::new(),
         device_type: DeviceType::Unknown,
-        open_ports: tcp
-            .open
-            .iter()
-            .map(|&number| Port {
-                number,
-                transport: Transport::Tcp,
-                state: PortState::Open,
-                service: service_name(number).map(str::to_string),
-                version: None,
-            })
-            .collect(),
+        open_ports: tcp.open.iter().map(|&n| open_port(n)).collect(),
         rtt_ms: ping.map(|p| p.rtt.as_secs_f64() * 1000.0),
         mdns_services: Vec::new(),
         ssdp_info: None,
         first_seen: now,
         last_seen: now,
-    })
+    };
+    Some((host, tcp.silent))
 }
 
-/// Merge the OS ARP cache into the results (see module docs, step 3).
-fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr]) {
+fn open_port(number: u16) -> Port {
+    Port {
+        number,
+        transport: Transport::Tcp,
+        state: PortState::Open,
+        service: service_name(number).map(str::to_string),
+        version: None,
+    }
+}
+
+/// Second look at the ports that stayed silent on up hosts (see module docs,
+/// step 4). Every host's ports go at once: the hosts are up and their ARP
+/// entries warm, and the socket budget still caps the total.
+async fn recheck_silent_ports(ctx: &Ctx, timeout: Duration, sockets: Arc<Semaphore>) {
+    let pending: Vec<(Ipv4Addr, Vec<u16>)> = lock(&ctx.silent).drain().collect();
+    let mut set = JoinSet::new();
+    for (ip, ports) in pending {
+        let sockets = Arc::clone(&sockets);
+        set.spawn(async move {
+            let found = tcp_probe::probe(ip, &ports, timeout, ports.len(), sockets).await;
+            (ip, found.open)
+        });
+    }
+    while let Some(joined) = set.join_next().await {
+        let Ok((ip, open)) = joined else { continue };
+        if open.is_empty() {
+            continue;
+        }
+        let updated = ctx.lock_hosts().get_mut(&ip).map(|h| {
+            let before = h.open_ports.len();
+            for n in open {
+                if !h.open_ports.iter().any(|p| p.number == n) {
+                    h.open_ports.push(open_port(n));
+                }
+            }
+            h.open_ports.sort_by_key(|p| p.number);
+            (h.open_ports.len() - before, h.clone())
+        });
+        if let Some((added, h)) = updated {
+            ctx.open_ports.fetch_add(added as u32, Ordering::Relaxed);
+            ctx.observer.on_host(h);
+        }
+    }
+    ctx.report(ScanPhase::Resolving, true);
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Merge the OS ARP cache into the results (see module docs, step 3). Hosts
+/// known only from ARP answered no probe in time: all of `ports` get the
+/// second look.
+fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr], ports: &[u16]) {
     let arp = match platform::current().read_arp_cache() {
         Ok(m) => m,
         Err(e) => {
@@ -336,19 +398,22 @@ fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr]) {
         };
         match updated {
             Some(h) => ctx.observer.on_host(h),
-            None => ctx.add_host(Host {
-                ip,
-                vendor: oui::vendor(&mac).map(str::to_string),
-                mac: Some(mac),
-                hostnames: Vec::new(),
-                device_type: DeviceType::Unknown,
-                open_ports: Vec::new(),
-                rtt_ms: None,
-                mdns_services: Vec::new(),
-                ssdp_info: None,
-                first_seen: now,
-                last_seen: now,
-            }),
+            None => {
+                lock(&ctx.silent).insert(addr, ports.to_vec());
+                ctx.add_host(Host {
+                    ip,
+                    vendor: oui::vendor(&mac).map(str::to_string),
+                    mac: Some(mac),
+                    hostnames: Vec::new(),
+                    device_type: DeviceType::Unknown,
+                    open_ports: Vec::new(),
+                    rtt_ms: None,
+                    mdns_services: Vec::new(),
+                    ssdp_info: None,
+                    first_seen: now,
+                    last_seen: now,
+                })
+            }
         }
     }
 }
@@ -467,7 +532,8 @@ fn summarize(ctx: &Ctx) -> Summary {
     }
 }
 
-/// Sockets the scan may hold open at once: the soft fd limit minus headroom
+/// Sockets the scan may hold open at once: the soft fd limit (raised first
+/// when low) minus headroom
 /// for the host app, within sane bounds.
 fn socket_budget() -> usize {
     let mut lim = libc::rlimit {
@@ -475,12 +541,27 @@ fn socket_budget() -> usize {
         rlim_max: 0,
     };
     let soft = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } == 0 {
+        // Apps launched from the Finder get a soft limit of 256: raise it
+        // (up to the hard limit) so the budget is not the bottleneck.
+        let want = WANT_FDS.min(lim.rlim_max);
+        if lim.rlim_cur < want {
+            let raised = libc::rlimit {
+                rlim_cur: want,
+                rlim_max: lim.rlim_max,
+            };
+            if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } == 0 {
+                lim.rlim_cur = want;
+            }
+        }
         lim.rlim_cur
     } else {
         256
     };
     (soft.saturating_sub(64) as usize).clamp(16, 1024)
 }
+
+/// Descriptor soft limit the engine asks for (enough for a 1024-socket budget).
+const WANT_FDS: libc::rlim_t = 2048;
 
 fn now_ms() -> i64 {
     SystemTime::now()

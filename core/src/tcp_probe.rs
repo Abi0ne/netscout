@@ -28,6 +28,9 @@ pub struct HostProbe {
     pub up: bool,
     /// Ports that accepted a connection, ascending.
     pub open: Vec<u16>,
+    /// Ports that neither accepted nor refused before the deadline (filtered,
+    /// or just slow: worth a second, longer try once the host is known up).
+    pub silent: Vec<u16>,
 }
 
 /// Connect to every port in `ports` on `host` and report the combined outcome.
@@ -61,14 +64,17 @@ pub async fn probe(
         fold(Some(r), &mut out);
     }
     out.open.sort_unstable();
+    out.silent.sort_unstable();
     out
 }
 
 fn fold(r: Option<Result<(u16, TcpProbeResult), tokio::task::JoinError>>, out: &mut HostProbe) {
     if let Some(Ok((port, res))) = r {
         out.up |= res.proves_up();
-        if res == TcpProbeResult::Connected {
-            out.open.push(port);
+        match res {
+            TcpProbeResult::Connected => out.open.push(port),
+            TcpProbeResult::Unknown => out.silent.push(port),
+            TcpProbeResult::Refused => {}
         }
     }
 }
@@ -123,5 +129,6 @@ mod tests {
         .await;
         assert!(r.up);
         assert_eq!(r.open, vec![open]);
+        assert!(r.silent.is_empty());
     }
 }
