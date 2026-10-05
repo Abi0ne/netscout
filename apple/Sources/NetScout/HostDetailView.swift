@@ -5,6 +5,7 @@ import SwiftUI
 struct HostDetailView: View {
     @Environment(ScanModel.self) private var model
     let host: Host
+    @ViewState private var connecting: ConnectRequest?
 
     var body: some View {
         ScrollView {
@@ -15,6 +16,9 @@ struct HostDetailView: View {
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .sheet(item: $connecting) { request in
+            ConnectSheet(request: request)
         }
         .toolbar {
             ToolbarItem {
@@ -85,6 +89,13 @@ struct HostDetailView: View {
                         if let url = webURL(port.number) {
                             Button("Apri") { NSWorkspace.shared.open(url) }
                                 .buttonStyle(.link)
+                        }
+                        if let kind = RemoteProtocol(port: port) {
+                            Button("Connetti…") {
+                                connecting = ConnectRequest(kind: kind, host: host.ip, port: port.number)
+                            }
+                            .buttonStyle(.link)
+                            .help("Apri una sessione \(kind.label) nel Terminale o in Merlin")
                         }
                     }
                 }
