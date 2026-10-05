@@ -21,12 +21,21 @@ final class ScanModel {
     private(set) var isScanning = false
     /// IPs with a deep single-host scan in flight.
     private(set) var deepScanning: Set<String> = []
+    /// Target and depth of the last scan started (what a saved profile records).
+    private(set) var scannedTarget = ""
+    private(set) var scannedProfile: ScanProfile = .standard
+
+    /// Saved profiles, newest first.
+    private(set) var profiles: [ProfileSummary] = []
+    /// The comparison on screen, if any.
+    var comparison: ProfileComparison?
 
     /// Host updates waiting for the next coalesced flush (see `enqueue`).
     fileprivate var pendingHosts: [String: Host] = [:]
     fileprivate var flushScheduled = false
 
     private var scanner: Scanner?
+    private var profileStore: ProfileStore?
     /// Bumped on every start/cancel so late events of an old scan are dropped.
     private var generation = 0
 
@@ -41,6 +50,7 @@ final class ScanModel {
         } catch {
             errorMessage = "Impossibile avviare il motore: \(error)"
         }
+        openProfiles()
     }
 
     var sortedHosts: [Host] {
@@ -75,6 +85,9 @@ final class ScanModel {
         progress = nil
         summary = nil
         errorMessage = nil
+        comparison = nil
+        scannedTarget = trimmed
+        scannedProfile = profile
         let observer = ObserverBridge { [weak self] event in
             self?.apply(event, generation: gen)
         }
@@ -142,6 +155,108 @@ final class ScanModel {
         case .error(let message):
             errorMessage = message
         }
+    }
+}
+
+// MARK: - Saved profiles
+
+/// A finished scan compared with a saved profile.
+struct ProfileComparison: Identifiable {
+    let profile: ProfileSummary
+    let diff: ScanDiff
+    /// The current scan probed a different target or used a different depth,
+    /// so some differences may come from that rather than from the network.
+    let targetDiffers: Bool
+    let depthDiffers: Bool
+    var id: String { profile.id }
+}
+
+extension ScanModel {
+    /// A finished scan with results can be saved or compared.
+    var hasFinishedScan: Bool {
+        summary != nil && !isScanning && !hosts.isEmpty
+    }
+
+    /// Suggested name for a new profile.
+    var suggestedProfileName: String {
+        "\(scannedTarget) · \(Date().formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    private func openProfiles() {
+        do {
+            let dir = try FileManager.default
+                .url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                .appending(path: "NetScout/Profiles", directoryHint: .isDirectory)
+            profileStore = try openProfileStore(dir: dir.path(percentEncoded: false))
+            refreshProfiles()
+        } catch {
+            errorMessage = "Impossibile aprire i profili salvati: \(error)"
+        }
+    }
+
+    func refreshProfiles() {
+        guard let profileStore else { return }
+        do {
+            profiles = try profileStore.list()
+        } catch {
+            errorMessage = "Impossibile leggere i profili: \(error)"
+        }
+    }
+
+    /// Save the finished scan as a new profile; returns it on success.
+    @discardableResult
+    func saveScan(as name: String) -> ProfileSummary? {
+        guard let profileStore, hasFinishedScan else { return nil }
+        do {
+            let saved = try profileStore.save(
+                name: name, target: scannedTarget, scanProfile: scannedProfile, hosts: sortedHosts
+            )
+            refreshProfiles()
+            return saved
+        } catch {
+            errorMessage = "Salvataggio non riuscito: \(error)"
+            return nil
+        }
+    }
+
+    func loadProfile(id: String) -> SavedProfile? {
+        do {
+            return try profileStore?.load(id: id)
+        } catch {
+            errorMessage = "Impossibile aprire il profilo: \(error)"
+            return nil
+        }
+    }
+
+    func renameProfile(id: String, to name: String) {
+        do {
+            try profileStore?.rename(id: id, name: name)
+        } catch {
+            errorMessage = "Impossibile rinominare il profilo: \(error)"
+        }
+        refreshProfiles()
+    }
+
+    func deleteProfile(id: String) {
+        do {
+            try profileStore?.delete(id: id)
+        } catch {
+            errorMessage = "Impossibile eliminare il profilo: \(error)"
+        }
+        if comparison?.profile.id == id { comparison = nil }
+        refreshProfiles()
+    }
+
+    /// Compare the finished scan with profile `id` and show the result.
+    func compareScan(withProfile id: String) {
+        guard hasFinishedScan, let saved = loadProfile(id: id),
+              let summary = profiles.first(where: { $0.id == id }) else { return }
+        comparison = ProfileComparison(
+            profile: summary,
+            diff: diffHosts(baseline: saved.hosts, current: sortedHosts),
+            targetDiffers: saved.target != scannedTarget,
+            depthDiffers: saved.scanProfile != scannedProfile
+        )
     }
 }
 

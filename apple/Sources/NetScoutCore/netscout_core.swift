@@ -479,6 +479,30 @@ fileprivate struct FfiConverterDouble: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -515,6 +539,186 @@ fileprivate struct FfiConverterString: FfiConverter {
         writeInt(&buf, len)
         writeBytes(&buf, value.utf8)
     }
+}
+
+
+
+
+/**
+ * A directory of saved profiles. Construct it with [`open_profile_store`].
+ */
+public protocol ProfileStoreProtocol : AnyObject {
+    
+    func delete(id: String) throws 
+    
+    /**
+     * Every readable profile, newest first. Unreadable files are skipped.
+     */
+    func list() throws  -> [ProfileSummary]
+    
+    func load(id: String) throws  -> SavedProfile
+    
+    func rename(id: String, name: String) throws 
+    
+    /**
+     * Save `hosts` as a new profile called `name`.
+     */
+    func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host]) throws  -> ProfileSummary
+    
+}
+
+/**
+ * A directory of saved profiles. Construct it with [`open_profile_store`].
+ */
+open class ProfileStore:
+    ProfileStoreProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_netscout_core_fn_clone_profilestore(self.pointer, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_netscout_core_fn_free_profilestore(pointer, $0) }
+    }
+
+    
+
+    
+open func delete(id: String)throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_delete(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),$0
+    )
+}
+}
+    
+    /**
+     * Every readable profile, newest first. Unreadable files are skipped.
+     */
+open func list()throws  -> [ProfileSummary] {
+    return try  FfiConverterSequenceTypeProfileSummary.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_list(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+open func load(id: String)throws  -> SavedProfile {
+    return try  FfiConverterTypeSavedProfile.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_load(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),$0
+    )
+})
+}
+    
+open func rename(id: String, name: String)throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_rename(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(name),$0
+    )
+}
+}
+    
+    /**
+     * Save `hosts` as a new profile called `name`.
+     */
+open func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host])throws  -> ProfileSummary {
+    return try  FfiConverterTypeProfileSummary.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_save(self.uniffiClonePointer(),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(target),
+        FfiConverterTypeScanProfile.lower(scanProfile),
+        FfiConverterSequenceTypeHost.lower(hosts),$0
+    )
+})
+}
+    
+
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProfileStore: FfiConverter {
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = ProfileStore
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> ProfileStore {
+        return ProfileStore(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: ProfileStore) -> UnsafeMutableRawPointer {
+        return value.uniffiClonePointer()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProfileStore {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: ProfileStore, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileStore_lift(_ pointer: UnsafeMutableRawPointer) throws -> ProfileStore {
+    return try FfiConverterTypeProfileStore.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileStore_lower(_ value: ProfileStore) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeProfileStore.lower(value)
 }
 
 
@@ -988,6 +1192,165 @@ public func FfiConverterTypeHost_lower(_ value: Host) -> RustBuffer {
 
 
 /**
+ * How one device differs between the profile and the new scan. Only the
+ * fields that describe the device are compared; latency, timestamps and
+ * mDNS/SSDP details change from scan to scan and are ignored.
+ */
+public struct HostChange {
+    /**
+     * The device as saved in the profile.
+     */
+    public var before: Host
+    /**
+     * The device as found now.
+     */
+    public var after: Host
+    public var ipChanged: Bool
+    public var macChanged: Bool
+    public var vendorChanged: Bool
+    public var deviceTypeChanged: Bool
+    /**
+     * Open now, not in the profile.
+     */
+    public var openedPorts: [UInt16]
+    /**
+     * Open in the profile, not now.
+     */
+    public var closedPorts: [UInt16]
+    public var addedHostnames: [String]
+    public var removedHostnames: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The device as saved in the profile.
+         */before: Host, 
+        /**
+         * The device as found now.
+         */after: Host, ipChanged: Bool, macChanged: Bool, vendorChanged: Bool, deviceTypeChanged: Bool, 
+        /**
+         * Open now, not in the profile.
+         */openedPorts: [UInt16], 
+        /**
+         * Open in the profile, not now.
+         */closedPorts: [UInt16], addedHostnames: [String], removedHostnames: [String]) {
+        self.before = before
+        self.after = after
+        self.ipChanged = ipChanged
+        self.macChanged = macChanged
+        self.vendorChanged = vendorChanged
+        self.deviceTypeChanged = deviceTypeChanged
+        self.openedPorts = openedPorts
+        self.closedPorts = closedPorts
+        self.addedHostnames = addedHostnames
+        self.removedHostnames = removedHostnames
+    }
+}
+
+
+
+extension HostChange: Equatable, Hashable {
+    public static func ==(lhs: HostChange, rhs: HostChange) -> Bool {
+        if lhs.before != rhs.before {
+            return false
+        }
+        if lhs.after != rhs.after {
+            return false
+        }
+        if lhs.ipChanged != rhs.ipChanged {
+            return false
+        }
+        if lhs.macChanged != rhs.macChanged {
+            return false
+        }
+        if lhs.vendorChanged != rhs.vendorChanged {
+            return false
+        }
+        if lhs.deviceTypeChanged != rhs.deviceTypeChanged {
+            return false
+        }
+        if lhs.openedPorts != rhs.openedPorts {
+            return false
+        }
+        if lhs.closedPorts != rhs.closedPorts {
+            return false
+        }
+        if lhs.addedHostnames != rhs.addedHostnames {
+            return false
+        }
+        if lhs.removedHostnames != rhs.removedHostnames {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(before)
+        hasher.combine(after)
+        hasher.combine(ipChanged)
+        hasher.combine(macChanged)
+        hasher.combine(vendorChanged)
+        hasher.combine(deviceTypeChanged)
+        hasher.combine(openedPorts)
+        hasher.combine(closedPorts)
+        hasher.combine(addedHostnames)
+        hasher.combine(removedHostnames)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostChange: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostChange {
+        return
+            try HostChange(
+                before: FfiConverterTypeHost.read(from: &buf), 
+                after: FfiConverterTypeHost.read(from: &buf), 
+                ipChanged: FfiConverterBool.read(from: &buf), 
+                macChanged: FfiConverterBool.read(from: &buf), 
+                vendorChanged: FfiConverterBool.read(from: &buf), 
+                deviceTypeChanged: FfiConverterBool.read(from: &buf), 
+                openedPorts: FfiConverterSequenceUInt16.read(from: &buf), 
+                closedPorts: FfiConverterSequenceUInt16.read(from: &buf), 
+                addedHostnames: FfiConverterSequenceString.read(from: &buf), 
+                removedHostnames: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostChange, into buf: inout [UInt8]) {
+        FfiConverterTypeHost.write(value.before, into: &buf)
+        FfiConverterTypeHost.write(value.after, into: &buf)
+        FfiConverterBool.write(value.ipChanged, into: &buf)
+        FfiConverterBool.write(value.macChanged, into: &buf)
+        FfiConverterBool.write(value.vendorChanged, into: &buf)
+        FfiConverterBool.write(value.deviceTypeChanged, into: &buf)
+        FfiConverterSequenceUInt16.write(value.openedPorts, into: &buf)
+        FfiConverterSequenceUInt16.write(value.closedPorts, into: &buf)
+        FfiConverterSequenceString.write(value.addedHostnames, into: &buf)
+        FfiConverterSequenceString.write(value.removedHostnames, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostChange_lift(_ buf: RustBuffer) throws -> HostChange {
+    return try FfiConverterTypeHostChange.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostChange_lower(_ value: HostChange) -> RustBuffer {
+    return FfiConverterTypeHostChange.lower(value)
+}
+
+
+/**
  * A scannable network, as derived from a single interface.
  */
 public struct NetworkInfo {
@@ -1216,6 +1579,107 @@ public func FfiConverterTypePort_lower(_ value: Port) -> RustBuffer {
 
 
 /**
+ * A profile without its hosts, for listings.
+ */
+public struct ProfileSummary {
+    public var id: String
+    public var name: String
+    public var createdAt: Int64
+    public var target: String
+    public var scanProfile: ScanProfile
+    public var hostCount: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, createdAt: Int64, target: String, scanProfile: ScanProfile, hostCount: UInt32) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.target = target
+        self.scanProfile = scanProfile
+        self.hostCount = hostCount
+    }
+}
+
+
+
+extension ProfileSummary: Equatable, Hashable {
+    public static func ==(lhs: ProfileSummary, rhs: ProfileSummary) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return false
+        }
+        if lhs.target != rhs.target {
+            return false
+        }
+        if lhs.scanProfile != rhs.scanProfile {
+            return false
+        }
+        if lhs.hostCount != rhs.hostCount {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(createdAt)
+        hasher.combine(target)
+        hasher.combine(scanProfile)
+        hasher.combine(hostCount)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProfileSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProfileSummary {
+        return
+            try ProfileSummary(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                createdAt: FfiConverterInt64.read(from: &buf), 
+                target: FfiConverterString.read(from: &buf), 
+                scanProfile: FfiConverterTypeScanProfile.read(from: &buf), 
+                hostCount: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProfileSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterInt64.write(value.createdAt, into: &buf)
+        FfiConverterString.write(value.target, into: &buf)
+        FfiConverterTypeScanProfile.write(value.scanProfile, into: &buf)
+        FfiConverterUInt32.write(value.hostCount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileSummary_lift(_ buf: RustBuffer) throws -> ProfileSummary {
+    return try FfiConverterTypeProfileSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileSummary_lower(_ value: ProfileSummary) -> RustBuffer {
+    return FfiConverterTypeProfileSummary.lower(value)
+}
+
+
+/**
  * Live progress of a running scan.
  */
 public struct Progress {
@@ -1313,6 +1777,127 @@ public func FfiConverterTypeProgress_lift(_ buf: RustBuffer) throws -> Progress 
 #endif
 public func FfiConverterTypeProgress_lower(_ value: Progress) -> RustBuffer {
     return FfiConverterTypeProgress.lower(value)
+}
+
+
+/**
+ * A saved scan, with every host as it was when saved.
+ */
+public struct SavedProfile {
+    public var id: String
+    public var name: String
+    /**
+     * Epoch ms when the profile was saved.
+     */
+    public var createdAt: Int64
+    /**
+     * What was scanned (CIDR, IP, range…), as the user entered it.
+     */
+    public var target: String
+    /**
+     * The scan depth used; comparing scans of different depths reports
+     * ports that were simply not probed as closed.
+     */
+    public var scanProfile: ScanProfile
+    public var hosts: [Host]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, name: String, 
+        /**
+         * Epoch ms when the profile was saved.
+         */createdAt: Int64, 
+        /**
+         * What was scanned (CIDR, IP, range…), as the user entered it.
+         */target: String, 
+        /**
+         * The scan depth used; comparing scans of different depths reports
+         * ports that were simply not probed as closed.
+         */scanProfile: ScanProfile, hosts: [Host]) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.target = target
+        self.scanProfile = scanProfile
+        self.hosts = hosts
+    }
+}
+
+
+
+extension SavedProfile: Equatable, Hashable {
+    public static func ==(lhs: SavedProfile, rhs: SavedProfile) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return false
+        }
+        if lhs.target != rhs.target {
+            return false
+        }
+        if lhs.scanProfile != rhs.scanProfile {
+            return false
+        }
+        if lhs.hosts != rhs.hosts {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(name)
+        hasher.combine(createdAt)
+        hasher.combine(target)
+        hasher.combine(scanProfile)
+        hasher.combine(hosts)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SavedProfile {
+        return
+            try SavedProfile(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                createdAt: FfiConverterInt64.read(from: &buf), 
+                target: FfiConverterString.read(from: &buf), 
+                scanProfile: FfiConverterTypeScanProfile.read(from: &buf), 
+                hosts: FfiConverterSequenceTypeHost.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SavedProfile, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterInt64.write(value.createdAt, into: &buf)
+        FfiConverterString.write(value.target, into: &buf)
+        FfiConverterTypeScanProfile.write(value.scanProfile, into: &buf)
+        FfiConverterSequenceTypeHost.write(value.hosts, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSavedProfile_lift(_ buf: RustBuffer) throws -> SavedProfile {
+    return try FfiConverterTypeSavedProfile.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSavedProfile_lower(_ value: SavedProfile) -> RustBuffer {
+    return FfiConverterTypeSavedProfile.lower(value)
 }
 
 
@@ -1432,6 +2017,115 @@ public func FfiConverterTypeScanConfig_lift(_ buf: RustBuffer) throws -> ScanCon
 #endif
 public func FfiConverterTypeScanConfig_lower(_ value: ScanConfig) -> RustBuffer {
     return FfiConverterTypeScanConfig.lower(value)
+}
+
+
+/**
+ * Result of comparing a scan against a saved profile.
+ */
+public struct ScanDiff {
+    /**
+     * In the new scan only.
+     */
+    public var added: [Host]
+    /**
+     * In the profile only.
+     */
+    public var removed: [Host]
+    /**
+     * In both, with differences.
+     */
+    public var changed: [HostChange]
+    /**
+     * In both, identical.
+     */
+    public var unchanged: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * In the new scan only.
+         */added: [Host], 
+        /**
+         * In the profile only.
+         */removed: [Host], 
+        /**
+         * In both, with differences.
+         */changed: [HostChange], 
+        /**
+         * In both, identical.
+         */unchanged: UInt32) {
+        self.added = added
+        self.removed = removed
+        self.changed = changed
+        self.unchanged = unchanged
+    }
+}
+
+
+
+extension ScanDiff: Equatable, Hashable {
+    public static func ==(lhs: ScanDiff, rhs: ScanDiff) -> Bool {
+        if lhs.added != rhs.added {
+            return false
+        }
+        if lhs.removed != rhs.removed {
+            return false
+        }
+        if lhs.changed != rhs.changed {
+            return false
+        }
+        if lhs.unchanged != rhs.unchanged {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(added)
+        hasher.combine(removed)
+        hasher.combine(changed)
+        hasher.combine(unchanged)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeScanDiff: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ScanDiff {
+        return
+            try ScanDiff(
+                added: FfiConverterSequenceTypeHost.read(from: &buf), 
+                removed: FfiConverterSequenceTypeHost.read(from: &buf), 
+                changed: FfiConverterSequenceTypeHostChange.read(from: &buf), 
+                unchanged: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ScanDiff, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeHost.write(value.added, into: &buf)
+        FfiConverterSequenceTypeHost.write(value.removed, into: &buf)
+        FfiConverterSequenceTypeHostChange.write(value.changed, into: &buf)
+        FfiConverterUInt32.write(value.unchanged, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeScanDiff_lift(_ buf: RustBuffer) throws -> ScanDiff {
+    return try FfiConverterTypeScanDiff.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeScanDiff_lower(_ value: ScanDiff) -> RustBuffer {
+    return FfiConverterTypeScanDiff.lower(value)
 }
 
 
@@ -1788,6 +2482,9 @@ public enum DeviceType {
     case audio
     case iot
     case other
+    /**
+     * Also what a saved profile maps a type this build doesn't know to.
+     */
     case unknown
 }
 
@@ -2663,6 +3360,31 @@ fileprivate struct FfiConverterOptionTypeSsdpInfo: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = [UInt16]
+
+    public static func write(_ value: [UInt16], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterUInt16.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UInt16] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UInt16]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterUInt16.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -2705,6 +3427,56 @@ fileprivate struct FfiConverterSequenceTypeDeviceTypeCount: FfiConverterRustBuff
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeDeviceTypeCount.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeHost: FfiConverterRustBuffer {
+    typealias SwiftType = [Host]
+
+    public static func write(_ value: [Host], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHost.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Host] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Host]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHost.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeHostChange: FfiConverterRustBuffer {
+    typealias SwiftType = [HostChange]
+
+    public static func write(_ value: [HostChange], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHostChange.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [HostChange] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [HostChange]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHostChange.read(from: &buf))
         }
         return seq
     }
@@ -2763,6 +3535,31 @@ fileprivate struct FfiConverterSequenceTypePort: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeProfileSummary: FfiConverterRustBuffer {
+    typealias SwiftType = [ProfileSummary]
+
+    public static func write(_ value: [ProfileSummary], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeProfileSummary.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ProfileSummary] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ProfileSummary]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeProfileSummary.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
     typealias SwiftType = [ServiceInfo]
 
@@ -2785,6 +3582,22 @@ fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
     }
 }
 /**
+ * Compare a profile's hosts (`baseline`) with a new scan (`current`).
+ *
+ * Devices are matched by MAC first, so a device that got a new DHCP lease is
+ * reported as "IP changed" rather than as one removed and one added device.
+ * Hosts left over are matched by IP, unless both sides have a MAC and the
+ * MACs differ: that is a different device on a reused address.
+ */
+public func diffHosts(baseline: [Host], current: [Host]) -> ScanDiff {
+    return try!  FfiConverterTypeScanDiff.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_diff_hosts(
+        FfiConverterSequenceTypeHost.lower(baseline),
+        FfiConverterSequenceTypeHost.lower(current),$0
+    )
+})
+}
+/**
  * Construct the scanning engine. The returned handle is reference-counted:
  * drop it (or release it in Swift) and, when the last reference goes away,
  * running scans are cancelled and the private runtime is shut down.
@@ -2792,6 +3605,16 @@ fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
 public func newScanner()throws  -> Scanner {
     return try  FfiConverterTypeScanner.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
     uniffi_netscout_core_fn_func_new_scanner($0
+    )
+})
+}
+/**
+ * Open (creating it if needed) the profile directory `dir`.
+ */
+public func openProfileStore(dir: String)throws  -> ProfileStore {
+    return try  FfiConverterTypeProfileStore.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_func_open_profile_store(
+        FfiConverterString.lower(dir),$0
     )
 })
 }
@@ -2811,7 +3634,28 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_netscout_core_checksum_func_diff_hosts() != 18241) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_netscout_core_checksum_func_new_scanner() != 9395) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_func_open_profile_store() != 45667) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_delete() != 27973) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_list() != 50948) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_load() != 35914) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_rename() != 32892) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_save() != 51411) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanner_cancel() != 9320) {

@@ -327,6 +327,7 @@ dependencies = [
  "ipnet",
  "libc",
  "serde",
+ "serde_json",
  "socket2 0.5.10",
  "thiserror",
  "tokio",

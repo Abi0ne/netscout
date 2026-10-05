@@ -24,9 +24,11 @@ scripts/  bindgen, app bundle and data build automation
 ## Public core API (UniFFI surface)
 
 - **`Scanner`** — `new`, `detect_networks`, `set_network_info`, `start_scan`, `cancel`, `scan_host`.
+- **`ProfileStore`** (`open_profile_store(dir)`) — saved scans as JSON files: `list`, `load`, `save`, `rename`, `delete`.
+- **`diff_hosts(baseline, current)`** — compares a scan with a saved profile → `ScanDiff` (added / removed / changed / unchanged; devices matched by MAC, then IP).
 - **`ScanObserver`** — async callback interface: `on_host`, `on_progress`, `on_finished`, `on_error`.
 - **`ScanError`** — FFI error enum (thiserror + `uniffi::Error`).
-- **Records** — `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`, `Progress`, `Summary`, `DeviceTypeCount`.
+- **Records** — `SavedProfile`, `ProfileSummary`, `ScanDiff`, `HostChange`, `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`, `Progress`, `Summary`, `DeviceTypeCount`.
 - **Enums** — `DeviceType`, `Transport`, `PortState`, `ScanProfile`, `ScanPhase`.
 
 ## Building the core (any host, for verification)

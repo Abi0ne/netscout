@@ -196,7 +196,10 @@ fn send_loop(socket: &Socket, queue: &mpsc::Receiver<Outgoing>, pending: &Pendin
         let addr = SockAddr::from(SocketAddrV4::new(target, 0));
         if let Err(e) = socket.send_to_with_flags(&datagram, &addr, libc::MSG_DONTWAIT) {
             if std::env::var_os("NETSCOUT_DEBUG").is_some() {
-                eprintln!("[netscout-core] icmp send to {target} failed: {e} ({:?})", e.raw_os_error());
+                eprintln!(
+                    "[netscout-core] icmp send to {target} failed: {e} ({:?})",
+                    e.raw_os_error()
+                );
             }
             lock(pending).remove(&(target, seq));
         }

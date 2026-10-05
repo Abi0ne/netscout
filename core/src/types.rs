@@ -5,9 +5,12 @@
 //!   FFI-safe and unambiguous for a UI. (Internally the engine parses them.)
 //! * Timestamps are **epoch milliseconds** (`i64`).
 //! * `rtt_ms` is `f64` to preserve sub-millisecond precision on a LAN.
+//! * Host data derives serde so saved profiles (`profiles`) can store it.
+
+use serde::{Deserialize, Serialize};
 
 /// Coarse device classification, used for grouping and UI iconography.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum DeviceType {
     Router,
     Modem,
@@ -26,18 +29,20 @@ pub enum DeviceType {
     Audio,
     Iot,
     Other,
+    /// Also what a saved profile maps a type this build doesn't know to.
+    #[serde(other)]
     Unknown,
 }
 
 /// L4 transport of a port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum Transport {
     Tcp,
     Udp,
 }
 
 /// State of a port after a probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum PortState {
     Open,
     Closed,
@@ -47,7 +52,7 @@ pub enum PortState {
 
 /// High-level scan depth. Selects the port list, probe timeout, and the
 /// breadth of service identification (mDNS/SSDP/banner grabbing).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
 pub enum ScanProfile {
     Quick,
     Standard,
@@ -64,7 +69,7 @@ pub enum ScanPhase {
 }
 
 /// A single probed port on a host.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Port {
     pub number: u16,
     pub transport: Transport,
@@ -76,7 +81,7 @@ pub struct Port {
 }
 
 /// An mDNS (DNS-SD) advertised service observed on a host.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct ServiceInfo {
     /// Service type, e.g. "_http._tcp" or "_airplay._tcp".
     pub service_type: String,
@@ -91,7 +96,7 @@ pub struct ServiceInfo {
 }
 
 /// A UPnP/SSDP device descriptor observed on a host.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct SsdpInfo {
     /// Unique Service Name, e.g. "uuid:…".
     pub usn: String,
@@ -103,7 +108,7 @@ pub struct SsdpInfo {
 }
 
 /// A device discovered on the network, with everything we currently know.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct Host {
     /// IPv4 address, dotted (e.g. "192.168.1.24").
     pub ip: String,

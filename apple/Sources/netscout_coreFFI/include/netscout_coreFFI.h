@@ -290,6 +290,41 @@ typedef struct UniffiVTableCallbackInterfaceScanObserver {
 } UniffiVTableCallbackInterfaceScanObserver;
 
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_CLONE_PROFILESTORE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_CLONE_PROFILESTORE
+void*_Nonnull uniffi_netscout_core_fn_clone_profilestore(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FREE_PROFILESTORE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FREE_PROFILESTORE
+void uniffi_netscout_core_fn_free_profilestore(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_DELETE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_DELETE
+void uniffi_netscout_core_fn_method_profilestore_delete(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_LIST
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_LIST
+RustBuffer uniffi_netscout_core_fn_method_profilestore_list(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_LOAD
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_LOAD
+RustBuffer uniffi_netscout_core_fn_method_profilestore_load(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_RENAME
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_RENAME
+void uniffi_netscout_core_fn_method_profilestore_rename(void*_Nonnull ptr, RustBuffer id, RustBuffer name, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_SAVE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_SAVE
+RustBuffer uniffi_netscout_core_fn_method_profilestore_save(void*_Nonnull ptr, RustBuffer name, RustBuffer target, RustBuffer scan_profile, RustBuffer hosts, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_CLONE_SCANNER
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_CLONE_SCANNER
 void*_Nonnull uniffi_netscout_core_fn_clone_scanner(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -330,10 +365,20 @@ void uniffi_netscout_core_fn_method_scanner_start_scan(void*_Nonnull ptr, RustBu
 void uniffi_netscout_core_fn_init_callback_vtable_scanobserver(UniffiVTableCallbackInterfaceScanObserver* _Nonnull vtable
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_DIFF_HOSTS
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_DIFF_HOSTS
+RustBuffer uniffi_netscout_core_fn_func_diff_hosts(RustBuffer baseline, RustBuffer current, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_NEW_SCANNER
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_NEW_SCANNER
 void*_Nonnull uniffi_netscout_core_fn_func_new_scanner(RustCallStatus *_Nonnull out_status
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_OPEN_PROFILE_STORE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_OPEN_PROFILE_STORE
+void*_Nonnull uniffi_netscout_core_fn_func_open_profile_store(RustBuffer dir, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_NETSCOUT_CORE_RUSTBUFFER_ALLOC
@@ -616,9 +661,51 @@ void ffi_netscout_core_rust_future_free_void(uint64_t handle
 void ffi_netscout_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_DIFF_HOSTS
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_DIFF_HOSTS
+uint16_t uniffi_netscout_core_checksum_func_diff_hosts(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_NEW_SCANNER
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_NEW_SCANNER
 uint16_t uniffi_netscout_core_checksum_func_new_scanner(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_OPEN_PROFILE_STORE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_OPEN_PROFILE_STORE
+uint16_t uniffi_netscout_core_checksum_func_open_profile_store(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_DELETE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_DELETE
+uint16_t uniffi_netscout_core_checksum_method_profilestore_delete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_LIST
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_LIST
+uint16_t uniffi_netscout_core_checksum_method_profilestore_list(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_LOAD
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_LOAD
+uint16_t uniffi_netscout_core_checksum_method_profilestore_load(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_RENAME
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_RENAME
+uint16_t uniffi_netscout_core_checksum_method_profilestore_rename(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_SAVE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_SAVE
+uint16_t uniffi_netscout_core_checksum_method_profilestore_save(void
     
 );
 #endif

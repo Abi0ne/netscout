@@ -1,6 +1,38 @@
 import NetScoutCore
 import SwiftUI
 
+/// The window: the scan and the saved profiles, as tabs. A comparison opens
+/// as a sheet over either.
+struct RootView: View {
+    @Environment(ScanModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        TabView {
+            ContentView()
+                .tabItem { Label("Scansione", systemImage: "dot.radiowaves.left.and.right") }
+            ProfilesView()
+                .tabItem { Label("Profili salvati", systemImage: "archivebox") }
+        }
+        .sheet(item: $model.comparison) { comparison in
+            ComparisonView(comparison: comparison)
+        }
+        .alert(
+            "Errore",
+            isPresented: Binding(
+                get: { model.errorMessage != nil },
+                set: { if !$0 { model.errorMessage = nil } }
+            ),
+            presenting: model.errorMessage
+        ) { _ in
+            Button("OK") {}
+        } message: { message in
+            Text(message)
+        }
+    }
+}
+
+/// The scan tab.
 struct ContentView: View {
     @Environment(ScanModel.self) private var model
     @ViewState private var selection: String?
@@ -28,18 +60,6 @@ struct ContentView: View {
             }
         }
         .navigationTitle("NetScout")
-        .alert(
-            "Errore",
-            isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.errorMessage = nil } }
-            ),
-            presenting: model.errorMessage
-        ) { _ in
-            Button("OK") {}
-        } message: { message in
-            Text(message)
-        }
     }
 
     private var visibleHosts: [Host] {

@@ -12,6 +12,9 @@
 //! * [`Scanner`] — the engine object: `detect_networks`, `set_network_info`,
 //!   `start_scan`, `cancel`, `scan_host`.
 //! * [`ScanObserver`] — callback interface the engine streams results through.
+//! * [`ProfileStore`] (via `open_profile_store(dir)`) — saved scans:
+//!   `list`, `load`, `save`, `rename`, `delete`; `diff_hosts` compares a scan
+//!   with a saved profile (`ScanDiff`, `HostChange`).
 //! * [`ScanError`] — the FFI error enum.
 //! * Records: `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`,
 //!   `Progress`, `Summary`, `DeviceTypeCount`.
@@ -34,6 +37,7 @@ pub mod liveness;
 pub mod names;
 pub mod oui;
 pub mod platform;
+pub mod profiles;
 pub mod scanner;
 pub mod targets;
 pub mod tcp_probe;
@@ -41,6 +45,10 @@ pub mod types;
 
 pub use error::ScanError;
 pub use platform::requires_multicast_lock;
+pub use profiles::{
+    diff_hosts, open_profile_store, HostChange, ProfileStore, ProfileSummary, SavedProfile,
+    ScanDiff,
+};
 pub use scanner::{new_scanner, Scanner};
 pub use types::{
     DeviceType, DeviceTypeCount, Host, NetworkInfo, Port, PortState, Progress, ScanConfig,

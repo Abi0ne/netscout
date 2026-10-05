@@ -8,7 +8,7 @@ struct NetScoutApp: App {
 
     var body: some Scene {
         WindowGroup("NetScout") {
-            ContentView()
+            RootView()
                 .environment(model)
                 .frame(minWidth: 900, minHeight: 520)
         }
