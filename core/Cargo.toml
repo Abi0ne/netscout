@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Non-privileged LAN network scanner engine, shared across platforms via UniFFI."
 
-# rlib for `cargo test`; cdylib is the FFI artifact the XCFramework/AAR wraps.
+# rlib for `cargo test`; staticlib is linked into the macOS app by SwiftPM;
+# cdylib is what uniffi-bindgen reads and what the Android AAR will wrap.
 [lib]
 name = "netscout_core"
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib", "cdylib", "staticlib"]
 
 # The `uniffi-bindgen` binary target (proc-macro mode). Invoked as:
 #   netscout-core-bindgen generate --library <lib.so> --language swift|kotlin

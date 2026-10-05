@@ -8,7 +8,7 @@ platform is a thin UI (Swift/SwiftUI for macOS now, Kotlin for Android later).
 core/     netscout-core — tokio async engine, exposed via UniFFI
 apple/    SwiftUI macOS 14+ app (MVVM, @Observable, Swift concurrency)
 android/  (placeholder) Kotlin UI reusing the same engine as an AAR
-scripts/  bindgen + XCFramework build automation
+scripts/  bindgen, app bundle and data build automation
 ```
 
 ## Layout
@@ -17,8 +17,8 @@ scripts/  bindgen + XCFramework build automation
 | --- | --- |
 | `core/` | Rust library crate `netscout-core`. Owns its own tokio runtime; streams results through the `ScanObserver` callback interface; cancellable; no root. |
 | `core/src/platform/` | `trait PlatformNet` + per-OS impls selected by `cfg(target_os)`. |
-| `apple/` | macOS app. Links `core` as an arm64 (Apple Silicon) XCFramework. |
-| `scripts/` | `generate-bindings.sh`, `build-xcframework.sh`, `update-oui.sh` (refreshes `core/data/oui.tsv`, the embedded MAC-vendor table). |
+| `apple/` | SwiftUI macOS app (SwiftPM, no Xcode project). Links `core` as an arm64 static library. See `apple/README.md`. |
+| `scripts/` | `generate-bindings.sh`, `build-app.sh`, `update-oui.sh` (refreshes `core/data/oui.tsv`, the embedded MAC-vendor table). |
 | `android/` | Placeholder for the later Kotlin port. |
 
 ## Public core API (UniFFI surface)
@@ -45,9 +45,9 @@ cargo run --release --example scan -- 192.168.1.0/24  # explicit targets
 cargo run --release --example scan -- --deep          # --quick | --standard | --deep
 ```
 
-## Building the macOS framework
+## Building the macOS app
 
 ```
-scripts/generate-bindings.sh   # emit apple/Generated/netscout_core.swift
-scripts/build-xcframework.sh   # arm64 (Apple Silicon) .xcframework
+scripts/generate-bindings.sh   # refresh the UniFFI bindings in apple/Sources
+scripts/build-app.sh           # build apple/build/NetScout.app (arm64)
 ```

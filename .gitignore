@@ -15,3 +15,6 @@ android/**/build/
 
 # UniFFI generated Swift is checked in; keep the rest clean.
 *.swp
+
+# SwiftPM
+apple/.build/
