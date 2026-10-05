@@ -1,7 +1,7 @@
 # apple/ — macOS app (Phase 2/3)
 
 SwiftUI app for macOS 14+. MVVM with `@Observable` view models and Swift
-concurrency. Links the Rust engine as a universal **XCFramework**
+concurrency. Links the Rust engine as an arm64 **XCFramework**
 (`libs/NetScoutCore.xcframework`, built by `scripts/build-xcframework.sh`) and
 imports the generated bindings (`Generated/netscout_core.swift`, emitted by
 `scripts/generate-bindings.sh`).

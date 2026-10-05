@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build the netscout-core universal (x86_64 + arm64) dynamic library, generate
-# the Swift bindings, and package everything into an XCFramework under
-# apple/libs/. Run on a macOS host with Xcode + the two Rust targets installed:
+# Build the netscout-core Apple Silicon (arm64) dynamic library, generate the
+# Swift bindings, and package everything into an XCFramework under
+# apple/libs/. Run on a macOS host with Xcode + the arm64 Rust target installed:
 #
-#   rustup target add x86_64-apple-darwin aarch64-apple-darwin
+#   rustup target add aarch64-apple-darwin
 #
 set -euo pipefail
 
@@ -18,8 +18,7 @@ cd "$CORE"
 mkdir -p "$OUT"
 rm -rf "$OUT/NetScoutCore.xcframework"
 
-echo ">> cargo build --release (x86_64 + aarch64, macOS)"
-cargo build --release --target x86_64-apple-darwin
+echo ">> cargo build --release (aarch64, macOS)"
 cargo build --release --target aarch64-apple-darwin
 
 # Host build provides the bindgen tool + a dylib to read metadata from.
@@ -35,8 +34,7 @@ mkdir -p "$OUT/Generated"
 
 echo ">> assembling XCFramework"
 xcodebuild -create-xcframework \
-  -library "target/x86_64-apple-darwin/release/lib${NAME}.dylib"   -map x86_64 \
-  -library "target/aarch64-apple-darwin/release/lib${NAME}.dylib"  -map arm64 \
+  -library "target/aarch64-apple-darwin/release/lib${NAME}.dylib" \
   -output "$OUT/NetScoutCore.xcframework"
 
 echo ">> done: $OUT/NetScoutCore.xcframework (+ Swift bindings in $OUT/Generated)"

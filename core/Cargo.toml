@@ -19,7 +19,7 @@ path = "src/bindgen.rs"
 [dependencies]
 # Async runtime + primitives. The Scanner owns a private multi-thread runtime
 # so probes run regardless of the (non-tokio) FFI thread that created it.
-tokio = { version = "=1.53.2", features = ["rt-multi-thread", "sync", "time", "net", "io-util"] }
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 # CancellationToken (tokio_util::sync) used to make scans cancellable
 # (global + per-scan child tokens). Default features suffice: the `sync`
 # module is not behind a feature gate in tokio-util.

@@ -59,4 +59,8 @@ impl PlatformNet for AndroidNet {
             "no engine sockets on Android in Phase 1".into(),
         ))
     }
+    fn read_arp_cache(&self) -> Result<std::collections::HashMap<String, String>, ScanError> {
+        // No unprivileged ARP view on Android (API 29+ hides /proc/net/arp).
+        Ok(std::collections::HashMap::new())
+    }
 }

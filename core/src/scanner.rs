@@ -20,14 +20,16 @@
 //! scanner.cancel()?;
 //! ```
 
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 
+use crate::engine;
 use crate::error::ScanError;
 use crate::platform;
-use crate::types::{NetworkInfo, ScanConfig, ScanObserver};
+use crate::types::{NetworkInfo, ScanConfig, ScanObserver, ScanProfile};
 
 /// A long-lived scanner that owns a **private** tokio runtime.
 ///
@@ -35,13 +37,12 @@ use crate::types::{NetworkInfo, ScanConfig, ScanObserver};
 #[derive(uniffi::Object)]
 pub struct Scanner {
     /// Private multi-thread runtime. Every probe runs here, independent of the
-    /// (non-tokio) FFI thread that constructed the `Scanner`.
-    /// (Phase 1: declared but not yet consumed — scan tasks call `runtime.spawn`
-    /// from `start_scan`/`scan_host` starting in Phase 2, which removes the allow.)
-    #[allow(dead_code)]
-    runtime: Runtime,
-    /// Global switch: `cancel()` trips this, which drops every in-flight scan.
-    cancel: CancellationToken,
+    /// (non-tokio) FFI thread that constructed the `Scanner`. `None` only
+    /// while being dropped.
+    runtime: Option<Runtime>,
+    /// Parent of every running scan's token. `cancel()` trips it and installs
+    /// a fresh one, so later scans are unaffected.
+    cancel: Mutex<CancellationToken>,
     /// Network info injected by the platform (Android/Kotlin) when it cannot
     /// enumerate interfaces itself. `None` on platforms that can self-detect.
     injected_network: Mutex<Option<NetworkInfo>>,
@@ -56,16 +57,49 @@ impl Scanner {
         let runtime = Runtime::new()
             .map_err(|e| ScanError::Internal(format!("failed to create tokio runtime: {e}")))?;
         Ok(Self {
-            runtime,
-            cancel: CancellationToken::new(),
+            runtime: Some(runtime),
+            cancel: Mutex::new(CancellationToken::new()),
             injected_network: Mutex::new(None),
         })
+    }
+
+    /// Spawn `job` on the private runtime under a child of the cancel token.
+    fn launch(
+        &self,
+        job: engine::ScanJob,
+        observer: Box<dyn ScanObserver>,
+    ) -> Result<(), ScanError> {
+        let token = self
+            .cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .child_token();
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or_else(|| ScanError::Internal("scanner is shutting down".into()))?;
+        runtime.spawn(engine::run(job, Arc::from(observer), token));
+        Ok(())
+    }
+}
+
+impl Drop for Scanner {
+    fn drop(&mut self) {
+        self.cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancel();
+        // Never blocks, so dropping the last handle is safe from any thread,
+        // including from inside an observer callback.
+        if let Some(rt) = self.runtime.take() {
+            rt.shutdown_background();
+        }
     }
 }
 
 /// Construct the scanning engine. The returned handle is reference-counted:
 /// drop it (or release it in Swift) and, when the last reference goes away,
-/// the private tokio runtime is shut down with it.
+/// running scans are cancelled and the private runtime is shut down.
 #[uniffi::export]
 pub fn new_scanner() -> Result<Arc<Scanner>, ScanError> {
     Scanner::build().map(Arc::new)
@@ -75,30 +109,36 @@ pub fn new_scanner() -> Result<Arc<Scanner>, ScanError> {
 impl Scanner {
     /// Discover the local networks this host can scan (one [`NetworkInfo`] per
     /// viable interface). Non-privileged: uses OS interface enumeration only.
+    /// Network info injected with `set_network_info` takes precedence.
     pub fn detect_networks(self: Arc<Self>) -> Result<Vec<NetworkInfo>, ScanError> {
-        // Phase 2: delegate to `platform::current().enumerate_networks()`.
-        let _ = platform::current();
-        Err(ScanError::NotImplemented)
+        let injected = self
+            .injected_network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match injected {
+            Some(info) => Ok(vec![info]),
+            None => platform::current().enumerate_networks(),
+        }
     }
 
     /// Inject network info from the platform. Android's engine has no raw
     /// interface enumeration, so Kotlin calls this with the known Wi-Fi subnet
-    /// (and the app's own interface) before starting a scan. A poisoned lock
-    /// (previously poisoned by a panic) is ignored — injection simply doesn't
-    /// take effect.
+    /// (and the app's own interface) before starting a scan.
     pub fn set_network_info(self: Arc<Self>, info: NetworkInfo) {
-        if let Ok(mut guard) = self.injected_network.lock() {
-            *guard = Some(info);
-        }
+        *self
+            .injected_network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(info);
     }
 
     /// Begin a **non-blocking** scan. Returns immediately; results stream
     /// through `observer` on the private runtime. Stop it with
     /// [`Scanner::cancel`].
     ///
-    /// Concurrency is bounded: a `tokio::sync::Semaphore` sized to
-    /// `config.concurrency` caps how many hosts are in flight, and each host
-    /// task gets a child of the per-scan cancellation token.
+    /// Concurrency is bounded: at most `config.concurrency` hosts are in
+    /// flight, and each host probes at most `config.per_host_concurrency`
+    /// ports at a time. `timeout_ms = 0` selects the profile's default.
     pub fn start_scan(
         self: Arc<Self>,
         config: ScanConfig,
@@ -107,21 +147,19 @@ impl Scanner {
         if config.targets.is_empty() {
             return Err(ScanError::InvalidConfig("targets must not be empty".into()));
         }
-        if config.concurrency == 0 {
-            return Err(ScanError::InvalidConfig("concurrency must be > 0".into()));
-        }
-        // Phase 2: build a per-scan child `CancellationToken`, expand `targets`
-        // into concrete /32s, create the bounded `Semaphore`, and spawn one task
-        // per host on `self.runtime`, streaming to `observer`.
-        let _ = observer;
-        Err(ScanError::NotImplemented)
+        let job = engine::plan(&config)?;
+        self.launch(job, observer)
     }
 
-    /// Cancel the active scan (idempotent, non-blocking). In-flight probes stop
-    /// at their next await point. The observer is **not** sent a cancellation
-    /// event — the caller already knows it asked for this.
+    /// Cancel every active scan (idempotent, non-blocking). In-flight probes
+    /// stop at their next await point. The observer is **not** sent a
+    /// cancellation event — the caller already knows it asked for this.
     pub fn cancel(self: Arc<Self>) -> Result<(), ScanError> {
-        self.cancel.cancel();
+        let old = std::mem::replace(
+            &mut *self.cancel.lock().unwrap_or_else(|e| e.into_inner()),
+            CancellationToken::new(),
+        );
+        old.cancel();
         Ok(())
     }
 
@@ -132,10 +170,22 @@ impl Scanner {
         ip: String,
         observer: Box<dyn ScanObserver>,
     ) -> Result<(), ScanError> {
+        let ip = ip.trim();
         if ip.is_empty() {
             return Err(ScanError::InvalidConfig("ip must not be empty".into()));
         }
-        let _ = observer;
-        Err(ScanError::NotImplemented)
+        if ip.parse::<Ipv4Addr>().is_err() {
+            return Err(ScanError::InvalidConfig(format!(
+                "'{ip}' is not an IPv4 address"
+            )));
+        }
+        let job = engine::plan(&ScanConfig {
+            targets: vec![ip.to_string()],
+            profile: ScanProfile::Deep,
+            concurrency: 1,
+            per_host_concurrency: 16,
+            timeout_ms: 0,
+        })?;
+        self.launch(job, observer)
     }
 }

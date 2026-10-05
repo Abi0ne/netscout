@@ -7,14 +7,14 @@
 //! * a decimal range:        `"192.168.1.10-200"`
 //! * a full range:           `"192.168.1.10-192.168.1.200"`
 //!
-//! For CIDRs, network and broadcast addresses are excluded for prefixes of
-//! `/31` and above (the spec calls those out explicitly); `/30` keeps its
-//! network and broadcast as probeable. Empty output (e.g. a `/32` on the
-//! network address alone) is a parse error so the caller can report it.
+//! For CIDRs up to `/30` the network and broadcast addresses are excluded
+//! (they are not hosts, and a broadcast probe would be ambiguous). A `/31` is a
+//! point-to-point link with two usable addresses (RFC 3021); a `/32` is the
+//! single address.
 
 use std::net::Ipv4Addr;
 
-use ipnet::{Ipv4Net, Ipv4NetBuf};
+use ipnet::Ipv4Net;
 
 use crate::error::ScanError;
 
@@ -35,27 +35,32 @@ impl TargetSpec {
             Self::Cidr(net) => expand_cidr(net),
         }
     }
+
+    /// How many addresses [`TargetSpec::expand`] yields (cheap for CIDRs).
+    pub fn host_count(&self) -> u64 {
+        match self {
+            Self::Ipv4(addrs) => addrs.len() as u64,
+            Self::Cidr(net) => cidr_host_count(net),
+        }
+    }
 }
 
-/// Expand a CIDR into concrete addresses, excluding the network and
-/// broadcast addresses for prefixes of `/31` and above.
-///
-/// `/31` yields the two usable addresses; `/32` yields the single address
-/// (there is no separate network/broadcast).
+/// Expand a CIDR into concrete addresses: network and broadcast excluded up
+/// to `/30`, both addresses of a `/31`, the single address of a `/32`.
 pub fn expand_cidr(net: &Ipv4Net) -> Vec<Ipv4Addr> {
-    let prefix = net.prefix();
-    if prefix < 31 {
-        // Full usable range. (For `prefix < 30` this is network+1 ..
-        // broadcast-1; `Ipv4Net::iter` yields the whole block, which matches
-        // the "keep network and broadcast for /30" rule.)
-        net.iter().collect()
-    } else {
-        // /31: two addresses, both usable. /32: the one address.
-        let net_addr = net.network();
-        match prefix {
-            31 => vec![net_addr, Ipv4Addr::from(u32::from(net_addr) + 1)],
-            _ => vec![net_addr],
-        }
+    let first = u32::from(net.network());
+    let last = u32::from(net.broadcast());
+    match net.prefix_len() {
+        31 | 32 => (first..=last).map(Ipv4Addr::from).collect(),
+        _ => (first + 1..last).map(Ipv4Addr::from).collect(),
+    }
+}
+
+/// Number of addresses [`expand_cidr`] would yield, without allocating.
+pub fn cidr_host_count(net: &Ipv4Net) -> u64 {
+    match net.prefix_len() {
+        p @ (31 | 32) => 1u64 << (32 - p),
+        p => (1u64 << (32 - p)) - 2,
     }
 }
 
@@ -125,7 +130,10 @@ fn parse_cidr(spec: &str) -> Result<Ipv4Net, String> {
     let addr: Ipv4Addr = addr
         .parse()
         .map_err(|_| "address part is not an IPv4 address".to_string())?;
-    Ok(Ipv4NetBuf::new(addr, prefix).net())
+    // Normalise "192.168.1.37/24" to its network so equal CIDRs dedupe.
+    Ipv4Net::new(addr, prefix)
+        .map(|n| n.trunc())
+        .map_err(|e| e.to_string())
 }
 
 fn parse_range(spec: &str) -> Result<Vec<Ipv4Addr>, String> {
@@ -137,15 +145,20 @@ fn parse_range(spec: &str) -> Result<Vec<Ipv4Addr>, String> {
 
     if hi.contains('.') {
         // Full range "a.b.c.d-w.x.y.z": both sides are complete addresses.
-        let start: Ipv4Addr = lo.parse().map_err(|_| "'{lo}' is not an IPv4 address".to_string())?;
-        let end: Ipv4Addr =
-            hi.parse().map_err(|_| "'{hi}' is not an IPv4 address".to_string())?;
+        let start: Ipv4Addr = lo
+            .parse()
+            .map_err(|_| format!("'{lo}' is not an IPv4 address"))?;
+        let end: Ipv4Addr = hi
+            .parse()
+            .map_err(|_| format!("'{hi}' is not an IPv4 address"))?;
         range_full(start, end)
     } else {
         // Short range "a.b.c.d-e": the leading part is an address, the
         // trailing part a final octet. (Trailing-digits with a dot would
         // have matched the full-range arm above, so `lo` is complete here.)
-        let addr: Ipv4Addr = lo.parse().map_err(|_| format!("'{lo}' is not an IPv4 address"))?;
+        let addr: Ipv4Addr = lo
+            .parse()
+            .map_err(|_| format!("'{lo}' is not an IPv4 address"))?;
         let last: u8 = hi
             .parse()
             .map_err(|_| format!("'{hi}' is not a final octet (0..=255)"))?;
@@ -161,7 +174,7 @@ fn range_full(start: Ipv4Addr, end: Ipv4Addr) -> Result<Vec<Ipv4Addr>, String> {
 }
 
 fn range_short(addr: Ipv4Addr, last: u8) -> Result<Vec<Ipv4Addr>, String> {
-    let o = octets(addr);
+    let o = addr.octets();
     if o[3] > last {
         return Err(format!(
             "range start {addr} (last octet {}) is after end octet {last}",
@@ -199,26 +212,25 @@ mod tests {
     }
 
     #[test]
-    fn cidr_expands_including_network_and_broadcast_below_31() {
+    fn cidr_excludes_network_and_broadcast() {
         let spec = parse_spec("192.168.1.0/24").unwrap();
         let addrs = spec.expand();
-        assert_eq!(addrs.len(), 256);
-        assert_eq!(addrs[0], v4("192.168.1.0"));
-        assert_eq!(addrs[255], v4("192.168.1.255"));
+        assert_eq!(addrs.len(), 254);
+        assert_eq!(spec.host_count(), 254);
+        assert_eq!(addrs[0], v4("192.168.1.1"));
+        assert_eq!(addrs[253], v4("192.168.1.254"));
         assert_eq!(
             spec,
-            TargetSpec::Cidr(Ipv4NetBuf::new(v4("192.168.1.0"), 24).net())
+            TargetSpec::Cidr(Ipv4Net::new(v4("192.168.1.0"), 24).unwrap())
         );
     }
 
     #[test]
-    fn cidr_31_excludes_network_and_broadcast() {
-        // 10.0.0.0/31 -> hosts 10.0.0.1 and 10.0.0.2 (the /31 "usable" pair).
+    fn cidr_31_keeps_both_addresses() {
+        // RFC 3021 point-to-point: both addresses are hosts.
         let spec = parse_spec("10.0.0.0/31").unwrap();
-        assert_eq!(
-            spec.expand(),
-            vec![v4("10.0.0.1"), v4("10.0.0.2")]
-        );
+        assert_eq!(spec.expand(), vec![v4("10.0.0.0"), v4("10.0.0.1")]);
+        assert_eq!(spec.host_count(), 2);
     }
 
     #[test]
@@ -230,19 +242,15 @@ mod tests {
     }
 
     #[test]
-    fn cidr_30_keeps_network_and_broadcast() {
-        // /30: network and broadcast remain probeable per the Phase 2 rule
-        // (exclusions start at /31).
+    fn cidr_30_excludes_network_and_broadcast() {
         let spec = parse_spec("10.0.0.0/30").unwrap();
-        assert_eq!(
-            spec.expand(),
-            vec![
-                v4("10.0.0.0"),
-                v4("10.0.0.1"),
-                v4("10.0.0.2"),
-                v4("10.0.0.3"),
-            ]
-        );
+        assert_eq!(spec.expand(), vec![v4("10.0.0.1"), v4("10.0.0.2")]);
+    }
+
+    #[test]
+    fn cidr_host_part_is_normalised() {
+        // "192.168.1.37/24" means the whole /24.
+        assert_eq!(parse_spec("192.168.1.37/24").unwrap().expand().len(), 254);
     }
 
     #[test]
@@ -281,7 +289,7 @@ mod tests {
         let addrs = spec.expand();
         assert_eq!(addrs[0], v4("192.168.1.100"));
         assert_eq!(addrs.last().unwrap(), &v4("192.168.2.5"));
-        assert_eq!(addrs.len(), 212); // 100..255 = 156, 1..5 = 5
+        assert_eq!(addrs.len(), 162); // .1.100..=.1.255 = 156, .2.0..=.2.5 = 6
     }
 
     #[test]
@@ -299,19 +307,18 @@ mod tests {
 
     #[test]
     fn comma_separated_list() {
-        let specs = parse_targets(&[
-            "192.168.1.0/24, 10.0.0.1, 10.0.0.5-8".into(),
-        ])
-        .unwrap();
+        let specs = parse_targets(&["192.168.1.0/24, 10.0.0.1, 10.0.0.5-8".into()]).unwrap();
         assert_eq!(specs.len(), 3);
-        assert!(matches!(&specs[0], TargetSpec::Cidr(n) if n.prefix() == 24));
-        assert_eq!(
-            specs[1],
-            TargetSpec::Ipv4(vec![v4("10.0.0.1")])
-        );
+        assert!(matches!(&specs[0], TargetSpec::Cidr(n) if n.prefix_len() == 24));
+        assert_eq!(specs[1], TargetSpec::Ipv4(vec![v4("10.0.0.1")]));
         assert_eq!(
             specs[2].expand(),
-            vec![v4("10.0.0.5"), v4("10.0.0.6"), v4("10.0.0.7"), v4("10.0.0.8")]
+            vec![
+                v4("10.0.0.5"),
+                v4("10.0.0.6"),
+                v4("10.0.0.7"),
+                v4("10.0.0.8")
+            ]
         );
     }
 
@@ -332,6 +339,6 @@ mod tests {
     fn total_address_count_across_specs() {
         let specs = parse_targets(&["192.168.1.0/24".into()]).unwrap();
         let total = specs.iter().map(|s| s.expand().len()).sum::<usize>();
-        assert_eq!(total, 256);
+        assert_eq!(total, 254);
     }
 }

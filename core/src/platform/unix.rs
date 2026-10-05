@@ -53,4 +53,8 @@ impl PlatformNet for UnixNet {
     fn tcp_probe(&self, _target: &str, _port: u16, _timeout: Duration) -> Result<bool, ScanError> {
         Err(ScanError::NotImplemented)
     }
+    fn read_arp_cache(&self) -> Result<std::collections::HashMap<String, String>, ScanError> {
+        // Phase 2: parse /proc/net/arp. Empty map = no MACs, scan still works.
+        Ok(std::collections::HashMap::new())
+    }
 }

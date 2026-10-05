@@ -3,187 +3,32 @@
 //! Everything here is unprivileged and does **not** shell out:
 //!
 //! * **Interface enumeration** — `getifaddrs(2)`: IPv4 address + netmask per
-//!   interface, flag filters (up, not loopback), and the link-layer address.
-//! * **Default gateway** — `sysctl` route table, `NET_RT_FLAGS` with
-//!   `RTF_GATEWAY` (the first matching entry is the default router).
+//!   interface, flag filters (up, not loopback).
+//! * **Default gateway** — `sysctl` route dump (`NET_RT_FLAGS` + `RTF_GATEWAY`):
+//!   the `0.0.0.0` destination entry is the default router, attributed to the
+//!   interface named by its `rtm_index`.
 //! * **DNS servers** — SystemConfiguration is a heavy dynamic library that
 //!   cannot be linked from the core crate; the spec-sanctioned fallback,
 //!   `/etc/resolv.conf`, is parsed instead (kept current by the OS).
-//! * **ARP cache** — `sysctl` route table with `RTF_LLINFO` (`NET_RT_IFLIST2`):
-//!   every ARP-resolved host exposes its link-layer address.
+//! * **ARP cache** — `sysctl` route dump with `RTF_LLINFO`: every resolved
+//!   neighbour carries an `AF_LINK` gateway holding its link-layer address.
 //!
 //! Capability notes: macOS *does* allow unprivileged `SOCK_DGRAM` ICMP ("ping")
 //! sockets, so `supports_unprivileged_icmp = true` — the engine's `PingClient`
 //! uses it. Raw ARP frames are not allowed, so MACs come from the ARP cache
 //! (`read_arp_cache`), not from active probes.
+//!
+//! All C layouts come from the `libc` crate; nothing is redeclared by hand.
 
 use std::collections::HashMap;
-use std::mem::{size_of, size_of_val, zeroed};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::ffi::CStr;
+use std::mem::size_of;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use crate::error::ScanError;
-use crate::liveness::TcpProbeResult;
 use crate::platform::PlatformNet;
 use crate::types::NetworkInfo;
-
-// ---------------------------------------------------------------------------
-// FFI: ifaddrs
-// ---------------------------------------------------------------------------
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-pub struct ifaddrs {
-    pub ifa_next: *mut ifaddrs,
-    pub ifa_name: *mut libc::c_char,
-    pub ifa_flags: u32,
-    pub ifa_addr: *mut libc::sockaddr,
-    pub ifa_netmask: *mut libc::sockaddr,
-    pub ifa_ifu: *mut c_void,
-    pub ifa_data: *mut c_void,
-}
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-struct if_data {
-    ifi_type: u8,
-    ifi_physical: u8,
-    ifi_addrcount: u32,
-    ifi_mtu: u32,
-    ifi_metric: u32,
-    ifi_baudrate: u64,
-    ifi_ipackets: u64,
-    ifi_ierrors: u64,
-    ifi_opackets: u64,
-    ifi_oerrors: u64,
-    ifi_collisions: u64,
-    ifi_ipacketdrops: u64,
-    ifi_obytes: u64,
-    ifi_ibytes: u64,
-    ifi_oqdrops: u64,
-    ifi_noproto: u64,
-    pub ifi_unit: u32,
-    ifi_internal: [u8; 4],
-    ifi_ibdrops: [u64; 8],
-    ifi_obytes2: u64,
-    ifi_ibytes2: u64,
-    ifi_opackets2: u64,
-    ifi_ipackets2: u64,
-    ifi_hwaddr: [u8; 12],
-}
-
-const AF_INET: libc::c_int = libc::AF_INET;
-const AF_INET6: libc::c_int = libc::AF_INET6;
-const ARPHRD_ETHER: i32 = 1;
-
-unsafe extern "C" {
-    fn getifaddrs(ifap: *mut *mut ifaddrs) -> libc::c_int;
-    fn freeifaddrs(ifap: *mut ifaddrs);
-}
-
-// ---------------------------------------------------------------------------
-// FFI: sysctl route table (gateway + ARP cache)
-// ---------------------------------------------------------------------------
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-struct sockaddr_dl {
-    sdl_len: u8,
-    sdl_family: u8,
-    sdl_index: u16,
-    sdl_nlen: u8,
-    sdl_alen: u8,
-    sdl_slen: u8,
-    sdl_unit: i32,
-    sdl_netlen: u8,
-    sdl_compress: u8,
-    sdl_type: [u8; 12],
-    sdl_nsa: [u8; 32],
-    sdl_alen2: u8,
-    _pad: [u8; 32],
-}
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-struct rtax_stats2 {
-    rts_rtt: u64,
-    rts_rttvar: u64,
-    rts_msu: u64,
-    rtx_rto: u64,
-    rts_rmx: i64,
-    rts_lose: u64,
-    rts_pks: u64,
-    rts_probes: i64,
-    rts_ssthresh: u64,
-    rts_cwnd: u64,
-    rts_bandwidth: u64,
-    rts_state: u32,
-    rts_fill: u32,
-    rts_ackcnt: u32,
-    rts_pad: [u8; 4],
-}
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-struct rtentry {
-    rt_vec: [libc::c_int; 5],
-    rt_metrics: *mut rtax_stats2,
-    rt_mflags: u32,
-    rt_refcnt: u32,
-    rt_refcnt_back: u32,
-    rt_lock: *mut u8,
-    rt_expire: libc::time_t,
-    rt_sa: sockaddr_storage,
-}
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-struct sockaddr_storage {
-    ss_family: u8,
-    ss_len: u8,
-    _pad: [u8; 136],
-}
-
-#[allow(non_camel_case_types)]
-#[repr(C)]
-struct route {
-    whdr_msglen: u32,
-    whdr_msgtype: u8,
-    whdr_version: u8,
-    whdr_flags: u16,
-    whdr_rid: u32,
-    whdr_seq: u32,
-    whdr_spid: u32,
-    whdr_pad: [u8; 4],
-    rtm: [u8; 28], // struct rtimsghdr
-    rt: rtentry,
-    pad: [u8; 12],
-}
-
-const RTM_GET: u8 = 3;
-const RTM_INFO2: u8 = 5;
-const RTM_NEW: u8 = 0x8;
-const RTM_OLD: u8 = 0x9;
-
-const RTM_VERSION: u16 = 5;
-
-const RTF_UP: u32 = 0x1;
-const RTF_GATEWAY: u32 = 0x2;
-const RTF_LLCINFO: u32 = 0x20;
-const RTF_PROTO1: u32 = 0x04; // static
-const RTF_CLONING: u32 = 0x100;
-
-const RTAX_MAX: usize = 11;
-
-const NET_RT_MFLAGS: c_int = 0x2;
-const NET_RT_TABLE: c_int = 0x3;
-const NET_RT_FLAGS: c_int = 0x4;
-const NET_RT_IFLIST: c_int = 0x6;
-const NET_RT_IFLIST2: c_int = 0x7;
-
-// ---------------------------------------------------------------------------
-// Implementation
-// ---------------------------------------------------------------------------
 
 pub struct MacOSNet;
 
@@ -201,38 +46,18 @@ impl PlatformNet for MacOSNet {
     }
 
     fn enumerate_networks(&self) -> Result<Vec<NetworkInfo>, ScanError> {
-        let mut head: *mut ifaddrs = std::ptr::null_mut();
-        if unsafe { getifaddrs(&mut head) } != 0 {
+        let mut nets = collect_ifaddrs()?;
+        if nets.is_empty() {
             return Err(ScanError::NoNetwork);
         }
-        let head = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            collect_ifaddrs(head)
-        }))
-        .unwrap_or_else(|_| Vec::new());
-        // `freeifaddrs` releases the `ifaddrs` nodes it walked; interface
-        // metadata was copied out above.
-        unsafe { freeifaddrs(head) };
-
-        if head.is_null() {
-            return Err(ScanError::NoNetwork);
+        // Gateway and DNS are fetched once and attributed per interface.
+        let gateways = default_gateways();
+        let dns = read_resolv_dns();
+        for n in &mut nets {
+            n.gateway = gateways.get(&n.interface).cloned();
+            n.dns = dns.clone();
         }
-        let mut nets = head;
-        // Deduplicate by (interface, ipv4).
-        let mut seen: Vec<(String, String)> = Vec::new();
-        nets.retain(|n| {
-            let key = (n.interface.clone(), n.ipv4.clone());
-            let novel = !seen.contains(&key);
-            seen.push(key);
-            novel
-        });
-        nets.retain(|n| {
-            let mut n = n;
-            n.gateway = default_gateway().ok().flatten();
-            n.dns = read_resolv_dns();
-            n
-        });
-        // The closure above returns &mut; redo with a plain loop.
-        Ok(())
+        Ok(nets)
     }
 
     fn resolve_mac(
@@ -242,8 +67,7 @@ impl PlatformNet for MacOSNet {
         _timeout: Duration,
     ) -> Result<Option<String>, ScanError> {
         Err(ScanError::Unsupported(
-            "no unprivileged raw ARP on macOS; read the ARP cache after the sweep"
-                .into(),
+            "no unprivileged raw ARP on macOS; read the ARP cache after the sweep".into(),
         ))
     }
 
@@ -258,227 +82,118 @@ impl PlatformNet for MacOSNet {
         Err(ScanError::NotImplemented)
     }
 
-    fn tcp_probe(
-        &self,
-        _target: &str,
-        _port: u16,
-        _timeout: Duration,
-    ) -> Result<TcpProbeResult, ScanError> {
+    fn tcp_probe(&self, _target: &str, _port: u16, _timeout: Duration) -> Result<bool, ScanError> {
+        // The engine's async `tcp_probe` module owns TCP connects.
         Err(ScanError::NotImplemented)
     }
 
     fn read_arp_cache(&self) -> Result<HashMap<String, String>, ScanError> {
+        let buf = route_dump(libc::RTF_LLINFO)?;
         let mut map = HashMap::new();
-        // First pass: size of the dump.
-        let mut size: libc::size_t = 0;
-        let res = unsafe {
-            sysctlbyname(
-                b"net/route/interface\0".as_ptr().cast(),
-                std::ptr::null_mut(),
-                &mut size,
-                std::ptr::null_mut(),
-                0,
-                NET_RT_IFLIST2,
-            )
-        };
-        if res != 0 {
-            return Err(ScanError::Network("sysctl NET_RT_IFLIST2 size".into()));
-        }
-        if size == 0 {
-            return Ok(map);
-        }
-        let mut buf = vec![0u8; size];
-        let res = unsafe {
-            sysctlbyname(
-                b"net/route/interface\0".as_ptr().cast(),
-                buf.as_mut_ptr().cast(),
-                &mut size,
-                std::ptr::null_mut(),
-                0,
-                NET_RT_IFLIST2,
-            )
-        };
-        if res != 0 {
-            return Err(ScanError::Network("sysctl NET_RT_IFLIST2 read".into()));
-        }
-        // Walk the msghdr stream.
-        let mut off: usize = 0;
-        while off + 4 <= size {
-            let msglen = u32::from_ne_bytes(buf[off..off + 4].try_into().unwrap()) as usize;
-            if msglen < 4 || off + msglen > size {
-                break;
-            }
-            let msgtype = buf[off + 4] as u8;
-            let version = buf[off + 5];
-            let rtm = &buf[off + 16..off + 16 + 16]; // rtimsghdr
-            if version != RTM_VERSION {
-                off += msglen;
+        for msg in RouteMessages::new(&buf) {
+            let (Some(dst), Some(gw)) = (msg.addr(libc::RTAX_DST), msg.addr(libc::RTAX_GATEWAY))
+            else {
                 continue;
+            };
+            if let (Some(ip), Some(mac)) = (sockaddr_ipv4(dst), sockaddr_dl_mac(gw)) {
+                map.insert(ip.to_string(), mac);
             }
-            if msgtype == RTM_INFO2
-                && rtm[0] & (RTF_UP as u8 | RTF_LLCINFO as u8) == RTF_UP as u8 | RTF_LLCINFO as u8
-            {
-                let (ip, mac) = parse_rt_info2(&buf[off..off + msglen]);
-                if let Some((ip, mac)) = ip.zip(mac) {
-                    map.insert(ip, mac);
-                }
-            }
-            off += msglen;
         }
         Ok(map)
     }
 }
 
-/// Parse one RTM_INFO2 message: needs RTF_UP|RTF_LLCINFO, dst = AF_INET,
-/// rtm_addrs has RTA_NET|RTA_LLINFO, lladdr = AF_LINK (ether, 6 bytes).
-fn parse_rt_info2(msg: &[u8]) -> (Option<String>, Option<String>) {
-    if msg.len() < size_of::<route>() {
-        return (None, None);
-    }
-    // rtm_addrs sits at offset 16 in the message.
-    let rtm = &msg[16..16 + 16];
-    let rtm_addrs: u32 = u32::from_ne_bytes(rtm[8..12].try_into().unwrap());
-    let (RTA_NET, RTA_DST, RTA_GATEWAY, RTA_LLINFO) = (0x0002u32, 0x0001u32, 0x0004u32, 0x0020u32);
-    if rtm_addrs & (RTA_NET | RTA_DST | RTA_GATEWAY | RTA_LLINFO) != RTA_NET | RTA_DST | RTA_GATEWAY | RTA_LLINFO
-    {
-        return (None, None);
-    }
-    let rtm_flags: u16 = u16::from_ne_bytes(rtm[4..6].try_into().unwrap());
-    if rtm_flags & (RTF_UP | RTF_LLCINFO) as u16 != RTF_UP | RTF_LLCINFO {
-        return (None, None);
-    }
-    // The sockaddr storage begins right after the rtimsghdr (16 bytes).
-    let storage = &msg[16 + 16..];
-    // dst: sockaddr_storage (144 bytes, padded), then gateway, then net, then lladdr.
-    let dst = &storage[0..size_of::<sockaddr_storage>()];
-    let dst_family = dst[0];
-    if dst_family != AF_INET as u8 {
-        return (None, None);
-    }
-    let dst_ip = ird_address(&dst[8..8 + 4]);
-    let _ = size_of_val(&dst[0]); // keep size_of_val import honest
-    let ll_offset = 3 * size_of::<sockaddr_storage>();
-    let ll = &storage[ll_offset..ll_offset + size_of::<sockaddr_storage>()];
-    if ll[0] != libc::AF_LINK as u8 {
-        return (None, Some(dst_ip.map(|a| a.to_string())));
-    }
-    let alen = ll[1] as usize;
-    if alen < 8 {
-        return (None, None);
-    }
-    // sockaddr_dl: the address bytes start at offset 8 (after the fixed head).
-    let mac = &ll[8..8 + 6];
-    let mac_str = mac
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(":");
-    (
-        dst_ip.map(|a| a.to_string()),
-        Some(mac_str),
-    )
-}
+// ---------------------------------------------------------------------------
+// Interfaces
+// ---------------------------------------------------------------------------
 
-fn ird_address(bytes: &[u8]) -> Option<Ipv4Addr> {
-    let b: [u8; 4] = bytes.try_into().ok()?;
-    Some(Ipv4Addr::from(b))
-}
-
-/// `sysctl(net, name, &mib[..2], buf, size, flags)` via `sysctlbyname`-style
-/// MIB construction. mib = [PF_ROUTE, name].
-#[cfg(target_os = "macos")]
-fn sysctlbyname(
-    _name: *const libc::c_char,
-    oldp: *mut libc::c_void,
-    oldlenp: *mut libc::size_t,
-    _newp: *const libc::c_void,
-    _newlen: libc::size_t,
-    name_kind: c_int,
-) -> libc::c_int {
-    let mib: [libc::c_int; 2] = [PF_ROUTE, name_kind];
-    unsafe {
-        libc::sysctl(mib.as_ptr() as *mut libc::c_int, 2, oldp, oldlenp, std::ptr::null_mut(), 0)
+/// IPv4 networks of every interface that is up and not loopback, deduplicated
+/// by (interface, address). CIDRs are normalised to the network address.
+fn collect_ifaddrs() -> Result<Vec<NetworkInfo>, ScanError> {
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Err(ScanError::NoNetwork);
     }
-}
 
-const PF_ROUTE: c_int = 5;
-
-/// Collect (interface, ipv4, prefix, flags, hwaddr) from the getifaddrs list.
-fn collect_ifaddrs(mut head: *mut ifaddrs) -> Vec<NetworkInfo> {
     let mut nets: Vec<NetworkInfo> = Vec::new();
-    while !head.is_null() {
-        let ifa = unsafe { &*head };
-        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }
-            .to_string_lossy()
-            .into_owned();
-        if ifa.ifa_addr.is_null() {
-            head = unsafe { ifa.ifa_next };
+    let mut cur = head;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a node of the list returned by getifaddrs, which
+        // stays valid until freeifaddrs below.
+        let ifa = unsafe { &*cur };
+        cur = ifa.ifa_next;
+
+        let flags = ifa.ifa_flags as libc::c_int;
+        if flags & libc::IFF_UP == 0 || flags & libc::IFF_LOOPBACK != 0 {
             continue;
         }
-        let sa = unsafe { *ifa.ifa_addr };
-        if sa.sa_family as u8 == AF_INET as u8 {
-            // AF_INET: sockaddr_in starts at the same offset in ifa_addr.
-            let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
-            let ip: Ipv4Addr = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr).to_ne_bytes());
-            let netmask_prefix = if ifa.ifa_netmask.is_null() {
-                0
-            } else {
-                let nmask = unsafe { &*(ifa.ifa_netmask as *const libc::sockaddr_in) };
-                prefix_from_netmask(nmask.sin_addr)
-            };
-            let flags = ifa.ifa_flags as u32;
-            if flags & libc::IFF_LOOPBACK as u32 != 0 {
-                head = unsafe { ifa.ifa_next };
-                continue;
-            }
-            if flags & libc::IFF_UP as u32 == 0 {
-                head = unsafe { ifa.ifa_next };
-                continue;
-            }
-            // Link-layer address, if this interface has one.
-            let mut hw = None;
-            if !ifa.ifa_ifu.is_null() {
-                let ifd = unsafe { &*(ifa.ifa_ifu as *const if_data) };
-                if ifd.ifi_type as i32 == ARPHRD_ETHER {
-                    let mac = &ifd.ifi_hwaddr[..6];
-                    hw = Some(
-                        mac.iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect::<Vec<_>>()
-                            .join(":"),
-                    );
-                }
-            }
-            // The CIDR base is derived in the dedupe pass below (network = ip & mask).
-            let _ = hw; // hardware address feeds Host.mac via the ARP cache instead
-            nets.push(NetworkInfo {
-                interface: name,
-                ipv4: ip.to_string(),
-                cidr: format!("{ip}/{netmask_prefix}"),
-                gateway: None,
-                dns: Vec::new(),
-            });
-        } else if sa.sa_family as u8 == AF_INET6 as u8 {
-            let _ = (name); // IPv6: not part of Phase 2 discovery; skip
-            let _ = ifa.ifa_netmask;
+        if ifa.ifa_addr.is_null()
+            || unsafe { (*ifa.ifa_addr).sa_family } as libc::c_int != libc::AF_INET
+        {
+            continue;
         }
-        head = unsafe { ifa.ifa_next };
+        let ip = unsafe { sin_ip(ifa.ifa_addr) };
+        let prefix = if ifa.ifa_netmask.is_null() {
+            32
+        } else {
+            prefix_from_netmask(unsafe { sin_ip(ifa.ifa_netmask) })
+        };
+        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
+        let net = network_address(ip, prefix);
+        let info = NetworkInfo {
+            interface: name,
+            ipv4: ip.to_string(),
+            cidr: format!("{net}/{prefix}"),
+            gateway: None,
+            dns: Vec::new(),
+        };
+        if !nets
+            .iter()
+            .any(|n| n.interface == info.interface && n.ipv4 == info.ipv4)
+        {
+            nets.push(info);
+        }
     }
-    nets
+    unsafe { libc::freeifaddrs(head) };
+    Ok(nets)
 }
 
-/// Fix up each entry's CIDR to a proper network address and dedupe.
-trait NetworkFix {
-    fn fixup(&mut self);
-}
-impl NetworkFix for Vec<NetworkInfo> {
-    fn fixup(&mut self) {}
+/// Read the IPv4 address out of a `sockaddr` known to be `AF_INET`.
+///
+/// # Safety
+/// `sa` must point to a valid `sockaddr_in`.
+unsafe fn sin_ip(sa: *const libc::sockaddr) -> Ipv4Addr {
+    let sin = unsafe { &*(sa as *const libc::sockaddr_in) };
+    Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr))
 }
 
-fn prefix_from_netmask(mask: libc::in_addr) -> u32 {
-    let n: u32 = u32::from_be(mask.s_addr).count_ones();
-    n
+fn prefix_from_netmask(mask: Ipv4Addr) -> u8 {
+    u32::from(mask).count_ones() as u8
 }
+
+fn network_address(ip: Ipv4Addr, prefix: u8) -> Ipv4Addr {
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix as u32)
+    };
+    Ipv4Addr::from(u32::from(ip) & mask)
+}
+
+fn interface_name(index: u16) -> Option<String> {
+    let mut buf = [0 as libc::c_char; libc::IF_NAMESIZE];
+    let p = unsafe { libc::if_indextoname(index as libc::c_uint, buf.as_mut_ptr()) };
+    if p.is_null() {
+        return None;
+    }
+    Some(unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// DNS
+// ---------------------------------------------------------------------------
 
 /// Parse `/etc/resolv.conf` `nameserver` lines (IPv4 only). This is the
 /// spec-sanctioned DNS fallback (SystemConfiguration can't be linked here).
@@ -486,61 +201,221 @@ fn read_resolv_dns() -> Vec<String> {
     let Ok(data) = std::fs::read_to_string("/etc/resolv.conf") else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    parse_resolv_dns(&data)
+}
+
+fn parse_resolv_dns(data: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     for line in data.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("nameserver") {
-            let token = rest.split_whitespace().next().unwrap_or("");
-            if let Ok(ip) = token.parse::<IpAddr>() {
-                if ip.is_ipv4() {
-                    out.push(token.to_string());
+        let Some(rest) = line.trim().strip_prefix("nameserver") else {
+            continue;
+        };
+        let token = rest.split_whitespace().next().unwrap_or("");
+        if matches!(token.parse::<IpAddr>(), Ok(IpAddr::V4(_))) && !out.iter().any(|s| s == token) {
+            out.push(token.to_string());
+        }
+        if out.len() >= 5 {
+            break;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Routing table (sysctl PF_ROUTE dump)
+// ---------------------------------------------------------------------------
+
+/// Dump the IPv4 routing table entries carrying `flags`
+/// (`CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, flags`).
+fn route_dump(flags: libc::c_int) -> Result<Vec<u8>, ScanError> {
+    let mut mib = [
+        libc::CTL_NET,
+        libc::PF_ROUTE,
+        0,
+        libc::AF_INET,
+        libc::NET_RT_FLAGS,
+        flags,
+    ];
+    // The table can grow between the size query and the read; retry a few times.
+    for _ in 0..4 {
+        let mut size: libc::size_t = 0;
+        let res = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if res != 0 {
+            return Err(ScanError::Network(format!(
+                "sysctl route size: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        size += size / 4; // headroom
+        let mut buf = vec![0u8; size];
+        let res = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                buf.as_mut_ptr().cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if res == 0 {
+            buf.truncate(size);
+            return Ok(buf);
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOMEM) {
+            break;
+        }
+    }
+    Err(ScanError::Network(format!(
+        "sysctl route read: {}",
+        std::io::Error::last_os_error()
+    )))
+}
+
+/// Default gateway per interface name: entries with destination `0.0.0.0`
+/// and an `AF_INET` gateway.
+fn default_gateways() -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Ok(buf) = route_dump(libc::RTF_GATEWAY) else {
+        return out;
+    };
+    for msg in RouteMessages::new(&buf) {
+        let dst = msg.addr(libc::RTAX_DST).and_then(sockaddr_ipv4);
+        let gw = msg.addr(libc::RTAX_GATEWAY).and_then(sockaddr_ipv4);
+        if let (Some(dst), Some(gw)) = (dst, gw) {
+            if dst.is_unspecified() && !gw.is_unspecified() {
+                if let Some(name) = interface_name(msg.index) {
+                    out.entry(name).or_insert_with(|| gw.to_string());
                 }
-            }
-            if out.len() >= 5 {
-                break;
             }
         }
     }
     out
 }
 
-/// First default-route gateway: `sysctl(NET_RT_FLAGS, RTF_GATEWAY)` — the
-/// first entry in the returned MIB array is the default router's address.
-fn default_gateway() -> Result<Option<String>, ScanError> {
-    // Size query.
-    let mut mib: [libc::c_int; 2] = [PF_ROUTE, NET_RT_FLAGS];
-    let mut size: libc::size_t = 0;
-    let res = unsafe {
-        libc::sysctl(mib.as_mut_ptr(), 2, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0)
-    };
-    if res != 0 || size == 0 {
-        return Ok(None);
+/// Packed sockaddrs of one routing message, indexed by `RTAX_*`.
+type RouteAddrs<'a> = [Option<&'a [u8]>; libc::RTAX_MAX as usize];
+
+/// One routing message: its interface index plus the packed sockaddrs.
+struct RouteMessage<'a> {
+    index: u16,
+    addrs: RouteAddrs<'a>,
+}
+
+impl<'a> RouteMessage<'a> {
+    fn addr(&self, rtax: libc::c_int) -> Option<&'a [u8]> {
+        self.addrs.get(rtax as usize).copied().flatten()
     }
-    // The table is an array of 2-element MIBs (PF_ROUTE, RTF_GATEWAY), each
-    // followed by the gateway sockaddr.
-    let mut buf = vec![0u8; size];
-    let res = unsafe {
-        libc::sysctl(mib.as_mut_ptr(), 2, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0)
-    };
-    if res != 0 {
-        return Err(ScanError::Network("sysctl NET_RT_FLAGS read".into()));
+}
+
+/// Iterator over the `rt_msghdr` stream returned by [`route_dump`].
+struct RouteMessages<'a> {
+    buf: &'a [u8],
+    off: usize,
+}
+
+impl<'a> RouteMessages<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, off: 0 }
     }
-    // The first 8 bytes are the MIB ([PF_ROUTE, RTF_GATEWAY]); the gateway
-    // sockaddr starts at offset 8 (4-byte alignment of the mib entries).
-    if size < 8 + 4 {
-        return Ok(None);
+}
+
+impl<'a> Iterator for RouteMessages<'a> {
+    type Item = RouteMessage<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let hdr_len = size_of::<libc::rt_msghdr>();
+        loop {
+            let rest = self.buf.get(self.off..)?;
+            if rest.len() < hdr_len {
+                return None;
+            }
+            // SAFETY: at least `hdr_len` bytes remain; read_unaligned copes
+            // with any alignment of the Vec<u8> backing store.
+            let hdr: libc::rt_msghdr = unsafe { std::ptr::read_unaligned(rest.as_ptr().cast()) };
+            let msglen = hdr.rtm_msglen as usize;
+            if msglen < hdr_len || msglen > rest.len() {
+                return None;
+            }
+            self.off += msglen;
+            if hdr.rtm_version as libc::c_int != libc::RTM_VERSION {
+                continue;
+            }
+            return Some(RouteMessage {
+                index: hdr.rtm_index,
+                addrs: split_sockaddrs(&rest[hdr_len..msglen], hdr.rtm_addrs),
+            });
+        }
     }
-    let sin = &buf[8..8 + std::mem::size_of::<libc::sockaddr_in>()];
-    let sin = unsafe { &*(sin.as_ptr() as *const libc::sockaddr_in) };
-    if sin.sin_family as u8 != AF_INET as u8 {
-        return Ok(None);
+}
+
+/// Split the packed sockaddrs following an `rt_msghdr`. Each present address
+/// (bit `i` of `rtm_addrs`) occupies `sa_len` bytes rounded up to 4; a zero
+/// `sa_len` still takes 4 bytes.
+fn split_sockaddrs(mut data: &[u8], rtm_addrs: libc::c_int) -> RouteAddrs<'_> {
+    let mut out: RouteAddrs<'_> = [None; libc::RTAX_MAX as usize];
+    for (i, slot) in out.iter_mut().enumerate() {
+        if rtm_addrs & (1 << i) == 0 {
+            continue;
+        }
+        let Some(&sa_len) = data.first() else {
+            break;
+        };
+        let sa_len = sa_len as usize;
+        let step = if sa_len == 0 { 4 } else { (sa_len + 3) & !3 };
+        *slot = Some(&data[..sa_len.min(data.len())]);
+        data = data.get(step..).unwrap_or(&[]);
     }
-    let ip: Ipv4Addr = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr).to_ne_bytes());
-    if ip.is_unspecified() {
-        Ok(None)
-    } else {
-        Ok(Some(ip.to_string()))
+    out
+}
+
+/// IPv4 address of a raw `sockaddr_in` (`[len, family, port(2), addr(4), …]`).
+/// Routing sockaddrs may be truncated (e.g. a short `0.0.0.0` netmask); the
+/// missing bytes are zero.
+fn sockaddr_ipv4(sa: &[u8]) -> Option<Ipv4Addr> {
+    if sa.len() < 2 || sa[1] as libc::c_int != libc::AF_INET {
+        return None;
     }
+    let mut b = [0u8; 4];
+    for (i, v) in b.iter_mut().enumerate() {
+        *v = sa.get(4 + i).copied().unwrap_or(0);
+    }
+    Some(Ipv4Addr::from(b))
+}
+
+/// Ethernet MAC of a raw `sockaddr_dl` (`sdl_data` holds the interface name
+/// followed by the link-layer address). `None` for incomplete ARP entries.
+fn sockaddr_dl_mac(sa: &[u8]) -> Option<String> {
+    // Offsets per <net/if_dl.h>: len, family, index(2), type, nlen, alen, slen, data…
+    if sa.len() < 8 || sa[1] as libc::c_int != libc::AF_LINK {
+        return None;
+    }
+    let (nlen, alen) = (sa[5] as usize, sa[6] as usize);
+    if alen != 6 {
+        return None;
+    }
+    let mac = sa.get(8 + nlen..8 + nlen + alen)?;
+    if mac.iter().all(|&b| b == 0) {
+        return None;
+    }
+    Some(
+        mac.iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
 }
 
 #[cfg(test)]
@@ -549,12 +424,65 @@ mod tests {
 
     #[test]
     fn prefix_from_netmask_counts_bits() {
-        assert_eq!(prefix_from_netmask(libc::in_addr { s_addr: 0xff.to_be() }), 8);
-        assert_eq!(prefix_from_netmask(libc::in_addr { s_addr: 0xff_ff.to_be() }), 16);
+        assert_eq!(prefix_from_netmask(Ipv4Addr::new(255, 0, 0, 0)), 8);
+        assert_eq!(prefix_from_netmask(Ipv4Addr::new(255, 255, 0, 0)), 16);
+        assert_eq!(prefix_from_netmask(Ipv4Addr::new(255, 255, 255, 0)), 24);
+        assert_eq!(prefix_from_netmask(Ipv4Addr::new(0, 0, 0, 0)), 0);
+    }
+
+    #[test]
+    fn network_address_masks_host_bits() {
+        let ip = Ipv4Addr::new(192, 168, 1, 37);
+        assert_eq!(network_address(ip, 24), Ipv4Addr::new(192, 168, 1, 0));
+        assert_eq!(network_address(ip, 32), ip);
+        assert_eq!(network_address(ip, 0), Ipv4Addr::UNSPECIFIED);
+    }
+
+    #[test]
+    fn resolv_conf_ipv4_only_deduped() {
+        let data = "# comment\nnameserver 1.1.1.1\nnameserver fe80::1\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n";
+        assert_eq!(parse_resolv_dns(data), vec!["1.1.1.1", "8.8.8.8"]);
+    }
+
+    #[test]
+    fn sockaddrs_split_with_rounding() {
+        // dst: sockaddr_in (16 bytes), gateway: 6-byte sockaddr rounded to 8.
+        let mut data = vec![16u8, libc::AF_INET as u8, 0, 0, 10, 0, 0, 1];
+        data.extend([0u8; 8]);
+        data.extend([6u8, libc::AF_INET as u8, 0, 0, 10, 0, 0, 0]);
+        let addrs = split_sockaddrs(&data, libc::RTA_DST | libc::RTA_GATEWAY);
         assert_eq!(
-            prefix_from_netmask(libc::in_addr { s_addr: 0xff_ff_ff.to_be() }),
-            24
+            sockaddr_ipv4(addrs[0].unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 1))
         );
-        assert_eq!(prefix_from_netmask(libc::in_addr { s_addr: 0 }), 0);
+        // Truncated sockaddr: missing address bytes read as zero.
+        assert_eq!(
+            sockaddr_ipv4(addrs[1].unwrap()),
+            Some(Ipv4Addr::new(10, 0, 0, 0))
+        );
+        assert!(addrs[2].is_none());
+    }
+
+    #[test]
+    fn sockaddr_dl_extracts_mac_after_name() {
+        // len, AF_LINK, index(2), type, nlen=3, alen=6, slen, "en0" + mac
+        let mut sa = vec![20u8, libc::AF_LINK as u8, 4, 0, 6, 3, 6, 0];
+        sa.extend(b"en0");
+        sa.extend([0xaa, 0xbb, 0xcc, 0x01, 0x02, 0x03]);
+        assert_eq!(sockaddr_dl_mac(&sa).as_deref(), Some("aa:bb:cc:01:02:03"));
+        sa[6] = 0; // incomplete entry
+        assert_eq!(sockaddr_dl_mac(&sa), None);
+    }
+
+    /// Smoke test against the live OS: must not error, and every network has
+    /// a well-formed CIDR.
+    #[test]
+    fn live_enumeration_and_arp_cache_do_not_fail() {
+        if let Ok(nets) = MacOSNet.enumerate_networks() {
+            for n in nets {
+                assert!(n.cidr.parse::<ipnet::Ipv4Net>().is_ok(), "{n:?}");
+            }
+        }
+        assert!(MacOSNet.read_arp_cache().is_ok());
     }
 }

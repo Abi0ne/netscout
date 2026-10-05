@@ -17,7 +17,7 @@ scripts/  bindgen + XCFramework build automation
 | --- | --- |
 | `core/` | Rust library crate `netscout-core`. Owns its own tokio runtime; streams results through the `ScanObserver` callback interface; cancellable; no root. |
 | `core/src/platform/` | `trait PlatformNet` + per-OS impls selected by `cfg(target_os)`. |
-| `apple/` | macOS app. Links `core` as a universal XCFramework. |
+| `apple/` | macOS app. Links `core` as an arm64 (Apple Silicon) XCFramework. |
 | `scripts/` | `generate-bindings.sh`, `build-xcframework.sh`. |
 | `android/` | Placeholder for the later Kotlin port. |
 
@@ -37,9 +37,17 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
+## Trying a scan from the terminal
+
+```
+cargo run --release --example scan                    # first detected LAN
+cargo run --release --example scan -- 192.168.1.0/24  # explicit targets
+cargo run --release --example scan -- --deep          # --quick | --standard | --deep
+```
+
 ## Building the macOS framework
 
 ```
 scripts/generate-bindings.sh   # emit apple/Generated/netscout_core.swift
-scripts/build-xcframework.sh   # universal x86_64 + arm64 .xcframework
+scripts/build-xcframework.sh   # arm64 (Apple Silicon) .xcframework
 ```

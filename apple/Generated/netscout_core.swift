@@ -528,15 +528,16 @@ fileprivate struct FfiConverterString: FfiConverter {
 public protocol ScannerProtocol : AnyObject {
     
     /**
-     * Cancel the active scan (idempotent, non-blocking). In-flight probes stop
-     * at their next await point. The observer is **not** sent a cancellation
-     * event — the caller already knows it asked for this.
+     * Cancel every active scan (idempotent, non-blocking). In-flight probes
+     * stop at their next await point. The observer is **not** sent a
+     * cancellation event — the caller already knows it asked for this.
      */
     func cancel() throws 
     
     /**
      * Discover the local networks this host can scan (one [`NetworkInfo`] per
      * viable interface). Non-privileged: uses OS interface enumeration only.
+     * Network info injected with `set_network_info` takes precedence.
      */
     func detectNetworks() throws  -> [NetworkInfo]
     
@@ -549,9 +550,7 @@ public protocol ScannerProtocol : AnyObject {
     /**
      * Inject network info from the platform. Android's engine has no raw
      * interface enumeration, so Kotlin calls this with the known Wi-Fi subnet
-     * (and the app's own interface) before starting a scan. A poisoned lock
-     * (previously poisoned by a panic) is ignored — injection simply doesn't
-     * take effect.
+     * (and the app's own interface) before starting a scan.
      */
     func setNetworkInfo(info: NetworkInfo) 
     
@@ -560,9 +559,9 @@ public protocol ScannerProtocol : AnyObject {
      * through `observer` on the private runtime. Stop it with
      * [`Scanner::cancel`].
      *
-     * Concurrency is bounded: a `tokio::sync::Semaphore` sized to
-     * `config.concurrency` caps how many hosts are in flight, and each host
-     * task gets a child of the per-scan cancellation token.
+     * Concurrency is bounded: at most `config.concurrency` hosts are in
+     * flight, and each host probes at most `config.per_host_concurrency`
+     * ports at a time. `timeout_ms = 0` selects the profile's default.
      */
     func startScan(config: ScanConfig, observer: ScanObserver) throws 
     
@@ -624,9 +623,9 @@ open class Scanner:
 
     
     /**
-     * Cancel the active scan (idempotent, non-blocking). In-flight probes stop
-     * at their next await point. The observer is **not** sent a cancellation
-     * event — the caller already knows it asked for this.
+     * Cancel every active scan (idempotent, non-blocking). In-flight probes
+     * stop at their next await point. The observer is **not** sent a
+     * cancellation event — the caller already knows it asked for this.
      */
 open func cancel()throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
     uniffi_netscout_core_fn_method_scanner_cancel(self.uniffiClonePointer(),$0
@@ -637,6 +636,7 @@ open func cancel()throws  {try rustCallWithError(FfiConverterTypeScanError.lift)
     /**
      * Discover the local networks this host can scan (one [`NetworkInfo`] per
      * viable interface). Non-privileged: uses OS interface enumeration only.
+     * Network info injected with `set_network_info` takes precedence.
      */
 open func detectNetworks()throws  -> [NetworkInfo] {
     return try  FfiConverterSequenceTypeNetworkInfo.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
@@ -660,9 +660,7 @@ open func scanHost(ip: String, observer: ScanObserver)throws  {try rustCallWithE
     /**
      * Inject network info from the platform. Android's engine has no raw
      * interface enumeration, so Kotlin calls this with the known Wi-Fi subnet
-     * (and the app's own interface) before starting a scan. A poisoned lock
-     * (previously poisoned by a panic) is ignored — injection simply doesn't
-     * take effect.
+     * (and the app's own interface) before starting a scan.
      */
 open func setNetworkInfo(info: NetworkInfo) {try! rustCall() {
     uniffi_netscout_core_fn_method_scanner_set_network_info(self.uniffiClonePointer(),
@@ -676,9 +674,9 @@ open func setNetworkInfo(info: NetworkInfo) {try! rustCall() {
      * through `observer` on the private runtime. Stop it with
      * [`Scanner::cancel`].
      *
-     * Concurrency is bounded: a `tokio::sync::Semaphore` sized to
-     * `config.concurrency` caps how many hosts are in flight, and each host
-     * task gets a child of the per-scan cancellation token.
+     * Concurrency is bounded: at most `config.concurrency` hosts are in
+     * flight, and each host probes at most `config.per_host_concurrency`
+     * ports at a time. `timeout_ms = 0` selects the profile's default.
      */
 open func startScan(config: ScanConfig, observer: ScanObserver)throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
     uniffi_netscout_core_fn_method_scanner_start_scan(self.uniffiClonePointer(),
@@ -2789,7 +2787,7 @@ fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
 /**
  * Construct the scanning engine. The returned handle is reference-counted:
  * drop it (or release it in Swift) and, when the last reference goes away,
- * the private tokio runtime is shut down with it.
+ * running scans are cancelled and the private runtime is shut down.
  */
 public func newScanner()throws  -> Scanner {
     return try  FfiConverterTypeScanner.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
@@ -2813,22 +2811,22 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_netscout_core_checksum_func_new_scanner() != 4229) {
+    if (uniffi_netscout_core_checksum_func_new_scanner() != 9395) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_netscout_core_checksum_method_scanner_cancel() != 634) {
+    if (uniffi_netscout_core_checksum_method_scanner_cancel() != 9320) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_netscout_core_checksum_method_scanner_detect_networks() != 27892) {
+    if (uniffi_netscout_core_checksum_method_scanner_detect_networks() != 55173) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanner_scan_host() != 64599) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_netscout_core_checksum_method_scanner_set_network_info() != 24546) {
+    if (uniffi_netscout_core_checksum_method_scanner_set_network_info() != 19057) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_netscout_core_checksum_method_scanner_start_scan() != 60061) {
+    if (uniffi_netscout_core_checksum_method_scanner_start_scan() != 8768) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanobserver_on_host() != 8110) {

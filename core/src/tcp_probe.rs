@@ -6,91 +6,83 @@
 //!
 //! All ports for one host are attempted in parallel within a bounded pool (at
 //! most `max_concurrent` connects at a time), so a /24 sweep is paced by the
-//! slowest *answers*, not by the length of the port list.
+//! slowest *answers*, not by the length of the port list. A process-wide
+//! socket budget (`sockets`) keeps the total number of open descriptors under
+//! the OS limit (macOS defaults to 256).
 
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
+use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::liveness::TcpProbeResult;
 
+/// Outcome of probing one host.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HostProbe {
+    /// True if any port proved the host is up (connected or refused).
+    pub up: bool,
+    /// Ports that accepted a connection, ascending.
+    pub open: Vec<u16>,
+}
+
 /// Connect to every port in `ports` on `host` and report the combined outcome.
-///
-/// Returns `(up, open)` where `up` is true if any probe proved liveness and
-/// `open` lists every port that accepted a connection (best-effort: the full
-/// port list is always probed, so `open` is complete for this call).
+/// The full port list is always probed, so `open` is complete for this call.
 pub async fn probe(
     host: Ipv4Addr,
     ports: &[u16],
     timeout: Duration,
     max_concurrent: usize,
-) -> (bool, Vec<(u16, TcpProbeResult)>) {
+    sockets: Arc<Semaphore>,
+) -> HostProbe {
     let max_concurrent = max_concurrent.max(1);
-    let mut up = false;
-    let mut open: Vec<(u16, TcpProbeResult)> = Vec::new();
+    let mut out = HostProbe::default();
+    let mut set: JoinSet<(u16, TcpProbeResult)> = JoinSet::new();
 
-    let mut pending: Vec<JoinHandle<(u16, TcpProbeResult)>> = Vec::new();
     for &port in ports {
-        pending.push(join_probe(host, port, timeout));
-        if pending.len() == max_concurrent {
-            drain(&mut pending, &mut up, &mut open).await;
+        if set.len() >= max_concurrent {
+            fold(set.join_next().await, &mut out);
+        }
+        let sockets = Arc::clone(&sockets);
+        set.spawn(async move {
+            // The permit is held for the socket's lifetime; a closed
+            // semaphore (scan torn down) just skips the probe.
+            let Ok(_permit) = sockets.acquire_owned().await else {
+                return (port, TcpProbeResult::Unknown);
+            };
+            (port, connect(SocketAddr::from((host, port)), timeout).await)
+        });
+    }
+    while let Some(r) = set.join_next().await {
+        fold(Some(r), &mut out);
+    }
+    out.open.sort_unstable();
+    out
+}
+
+fn fold(r: Option<Result<(u16, TcpProbeResult), tokio::task::JoinError>>, out: &mut HostProbe) {
+    if let Some(Ok((port, res))) = r {
+        out.up |= res.proves_up();
+        if res == TcpProbeResult::Connected {
+            out.open.push(port);
         }
     }
-    drain(&mut pending, &mut up, &mut open).await;
-
-    (up, open)
 }
 
-/// Await every in-flight probe in the current batch and fold its results.
-async fn drain(
-    pending: &mut Vec<JoinHandle<(u16, TcpProbeResult)>>,
-    up: &mut bool,
-    open: &mut Vec<(u16, TcpProbeResult)>,
-) {
-    while let Some(fut) = pending.pop() {
-        if let Ok((port, res)) = fut.await {
-            if res.proves_up() {
-                *up = true;
-            }
-            if matches!(res, TcpProbeResult::Connected) {
-                open.push((port, res));
-            }
-        }
+/// One async connect, raced against `timeout` and classified. The stream is
+/// dropped immediately: this is a pure liveness probe.
+pub async fn connect(addr: SocketAddr, timeout: Duration) -> TcpProbeResult {
+    match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
+        Ok(Ok(_stream)) => TcpProbeResult::Connected,
+        // RST arrived — from the host (port closed) or the local stack
+        // (e.g. loopback) — the host is up either way.
+        Ok(Err(e)) if e.kind() == io::ErrorKind::ConnectionRefused => TcpProbeResult::Refused,
+        Ok(Err(_)) | Err(_) => TcpProbeResult::Unknown,
     }
-}
-
-/// One connect, raced against `timeout` and classified.
-fn join_probe(
-    host: Ipv4Addr,
-    port: u16,
-    timeout: Duration,
-) -> JoinHandle<(u16, TcpProbeResult)> {
-    let addr = SocketAddr::V4((host, port).into());
-    tokio::spawn(async move {
-        let outcome = tokio::time::timeout(timeout, connect_blocking(addr)).await;
-        let res = match outcome {
-            Ok(Ok(())) => TcpProbeResult::Connected,
-            Ok(Err(e)) => match e.kind() {
-                // RST arrived — from the host (port closed) or the local stack
-                // (e.g. loopback) — the host is up either way.
-                io::ErrorKind::ConnectionRefused => TcpProbeResult::Refused,
-                _ => TcpProbeResult::Unknown,
-            },
-            Err(_) => TcpProbeResult::Unknown, // timeout
-        };
-        (port, res)
-    })
-}
-
-/// A connect raced against a deadline via a blocking `TcpStream::connect`
-/// (spawned by the caller on a runtime worker thread, so the FFI thread is
-/// never blocked). The stream is dropped immediately: this is a pure
-/// liveness probe.
-fn connect_blocking(addr: SocketAddr) -> io::Result<()> {
-    TcpStream::connect(addr)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -110,5 +102,26 @@ mod tests {
     #[test]
     fn unknown_does_not_prove_up() {
         assert!(!TcpProbeResult::Unknown.proves_up());
+    }
+
+    #[tokio::test]
+    async fn loopback_open_and_closed_ports() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open = listener.local_addr().unwrap().port();
+        // Bind-and-drop to find a port that is (very likely) closed.
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let r = probe(
+            Ipv4Addr::LOCALHOST,
+            &[open, closed],
+            Duration::from_secs(2),
+            4,
+            Arc::new(Semaphore::new(8)),
+        )
+        .await;
+        assert!(r.up);
+        assert_eq!(r.open, vec![open]);
     }
 }

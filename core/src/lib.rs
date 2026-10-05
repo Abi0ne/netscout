@@ -26,9 +26,14 @@
 //!   callback interface (UniFFI-managed vtable, `Send + Sync + 'static`) and the
 //!   `ScanError` type; no raw pointers or unwinds ever cross the boundary.
 
+mod engine;
 pub mod error;
+pub mod icmp;
+pub mod liveness;
 pub mod platform;
 pub mod scanner;
+pub mod targets;
+pub mod tcp_probe;
 pub mod types;
 
 pub use error::ScanError;
@@ -55,13 +60,30 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn detect_networks_is_stubbed() {
+    fn detect_networks_reads_the_os() {
         let s = new_scanner().expect("runtime ok");
-        assert!(matches!(
-            s.clone().detect_networks(),
-            Err(ScanError::NotImplemented)
-        ));
+        match s.detect_networks() {
+            Ok(nets) => assert!(!nets.is_empty()),
+            Err(e) => assert!(matches!(e, ScanError::NoNetwork), "{e}"),
+        }
+    }
+
+    #[test]
+    fn injected_network_takes_precedence() {
+        let s = new_scanner().expect("runtime ok");
+        let info = NetworkInfo {
+            interface: "wlan0".into(),
+            ipv4: "192.168.1.5".into(),
+            cidr: "192.168.1.0/24".into(),
+            gateway: Some("192.168.1.1".into()),
+            dns: vec![],
+        };
+        s.clone().set_network_info(info);
+        let nets = s.detect_networks().unwrap();
+        assert_eq!(nets.len(), 1);
+        assert_eq!(nets[0].interface, "wlan0");
     }
 
     #[test]
@@ -73,6 +95,60 @@ mod tests {
         );
         assert!(ScanError::Cancelled.is_cancelled());
         assert!(!ScanError::Network("x".into()).is_cancelled());
+    }
+
+    /// Observer that forwards `on_finished` to a channel.
+    struct Done(std::sync::Mutex<std::sync::mpsc::Sender<Summary>>);
+
+    impl ScanObserver for Done {
+        fn on_host(&self, _host: Host) {}
+        fn on_progress(&self, _progress: Progress) {}
+        fn on_finished(&self, summary: Summary) {
+            let _ = self.0.lock().unwrap().send(summary);
+        }
+        fn on_error(&self, _message: String) {}
+    }
+
+    fn config(target: &str) -> ScanConfig {
+        ScanConfig {
+            targets: vec![target.into()],
+            profile: ScanProfile::Quick,
+            concurrency: 16,
+            per_host_concurrency: 4,
+            timeout_ms: 300,
+        }
+    }
+
+    #[test]
+    fn loopback_scan_finishes_with_host_up() {
+        let s = new_scanner().expect("runtime ok");
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.clone()
+            .start_scan(config("127.0.0.1"), Box::new(Done(tx.into())))
+            .unwrap();
+        let summary = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("scan finished");
+        assert_eq!(summary.scanned_hosts, 1);
+        assert_eq!(summary.discovered_hosts, 1);
+    }
+
+    #[test]
+    fn cancel_stops_scan_and_later_scans_still_run() {
+        let s = new_scanner().expect("runtime ok");
+        // TEST-NET-1 (RFC 5737): nothing answers, so the scan would take a while.
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.clone()
+            .start_scan(config("192.0.2.0/24"), Box::new(Done(tx.into())))
+            .unwrap();
+        s.clone().cancel().unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(3)).is_err());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.clone()
+            .start_scan(config("127.0.0.1"), Box::new(Done(tx.into())))
+            .unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok());
     }
 
     #[test]
