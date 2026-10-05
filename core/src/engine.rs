@@ -14,7 +14,9 @@
 //! 4. **Names** — mDNS, NetBIOS and reverse DNS for every discovered host,
 //!    concurrently, bounded by a deadline (see `names`); hosts that get a
 //!    name are re-emitted.
-//! 5. **Finish** — `on_finished` with the summary. A cancelled scan stops at
+//! 5. **Classify** — each host's device type from the evidence gathered
+//!    (see `classify`); hosts whose type is now known are re-emitted.
+//! 6. **Finish** — `on_finished` with the summary. A cancelled scan stops at
 //!    the next await point and emits nothing further.
 
 use std::collections::{HashMap, HashSet};
@@ -27,6 +29,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::classify;
 use crate::error::ScanError;
 use crate::icmp::{self, PingClient};
 use crate::names;
@@ -180,6 +183,7 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
         last_progress: Mutex::new(Instant::now()),
     });
     ctx.report(ScanPhase::Probing, true);
+    let gateways = local_gateways();
 
     let pinger = if icmp::ping_available() {
         match PingClient::new() {
@@ -245,6 +249,7 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
     {
         return;
     }
+    classify_hosts(&ctx, &gateways);
 
     let summary = summarize(&ctx);
     ctx.report(ScanPhase::Done, true);
@@ -384,6 +389,35 @@ async fn resolve_names(ctx: &Ctx) {
 
 /// Reverse DNS for `ips` on the blocking pool, at most [`NAME_CONCURRENCY`]
 /// lookups at once, each abandoned after [`NAME_TIMEOUT`].
+/// Assign each host its device type; re-emit the hosts that changed.
+fn classify_hosts(ctx: &Ctx, gateways: &[Ipv4Addr]) {
+    let changed: Vec<Host> = ctx
+        .lock_hosts()
+        .values_mut()
+        .filter_map(|h| {
+            let t = classify::classify(h, gateways);
+            (t != h.device_type).then(|| {
+                h.device_type = t;
+                h.clone()
+            })
+        })
+        .collect();
+    for h in changed {
+        ctx.observer.on_host(h);
+    }
+}
+
+/// Default routers of this machine's networks (empty where the platform
+/// cannot enumerate them).
+fn local_gateways() -> Vec<Ipv4Addr> {
+    platform::current()
+        .enumerate_networks()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|n| n.gateway.as_deref()?.parse().ok())
+        .collect()
+}
+
 async fn reverse_dns(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
     let limit = Arc::new(Semaphore::new(NAME_CONCURRENCY));
     let mut lookups = JoinSet::new();

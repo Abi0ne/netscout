@@ -80,8 +80,9 @@ pub async fn netbios_names(hosts: &[Ipv4Addr], wait: Duration) -> HashMap<Ipv4Ad
 }
 
 /// Send `build(ip, id)` to every `ip:port` from one socket, then collect
-/// replies until `wait` elapses (or every host answered). Replies are matched
-/// by source address and transaction id.
+/// replies until `wait` elapses (or every host answered). Hosts still silent
+/// halfway through get the query once more: sleeping phones often miss the
+/// first one. Replies are matched by source address and transaction id.
 async fn query_all(
     hosts: &[Ipv4Addr],
     port: u16,
@@ -102,12 +103,24 @@ async fn query_all(
         }
     }
 
-    let deadline = Instant::now() + wait;
+    let start = Instant::now();
+    let deadline = start + wait;
+    let mut resend_at = Some(start + wait / 2);
     let mut buf = [0u8; 1500];
     while found.len() < ids.len() {
-        let Ok(Ok((n, from))) = tokio::time::timeout_at(deadline, socket.recv_from(&mut buf)).await
-        else {
-            break; // deadline reached (or socket error)
+        let wake = resend_at.unwrap_or(deadline);
+        let (n, from) = match tokio::time::timeout_at(wake, socket.recv_from(&mut buf)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(_)) => break, // socket error
+            Err(_) if resend_at.take().is_some() => {
+                for (&ip, &id) in &ids {
+                    if !found.contains_key(&ip) {
+                        let _ = socket.send_to(&build(ip, id), (ip, port)).await;
+                    }
+                }
+                continue;
+            }
+            Err(_) => break, // deadline reached
         };
         let SocketAddr::V4(from) = from else { continue };
         let ip = *from.ip();

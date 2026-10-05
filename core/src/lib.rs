@@ -26,6 +26,7 @@
 //!   callback interface (UniFFI-managed vtable, `Send + Sync + 'static`) and the
 //!   `ScanError` type; no raw pointers or unwinds ever cross the boundary.
 
+pub mod classify;
 mod engine;
 pub mod error;
 pub mod icmp;

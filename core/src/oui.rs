@@ -43,6 +43,10 @@ pub fn is_locally_administered(mac: &str) -> bool {
     parse_mac(mac).is_some_and(|m| m[0] & 0x02 != 0)
 }
 
+/// Owner of the MA-L blocks the IEEE subdivides into MA-M/MA-S assignments:
+/// not a vendor, so it is never reported as one.
+const IEEE_RA: &str = "IEEE Registration Authority";
+
 /// The registered vendor of `mac`, if its OUI is in the IEEE registry.
 pub fn vendor(mac: &str) -> Option<&'static str> {
     let m = parse_mac(mac)?;
@@ -54,6 +58,7 @@ pub fn vendor(mac: &str) -> Option<&'static str> {
     t.binary_search_by_key(&prefix, |&(p, _)| p)
         .ok()
         .map(|i| t[i].1)
+        .filter(|&v| v != IEEE_RA)
 }
 
 #[cfg(test)]
@@ -65,6 +70,12 @@ mod tests {
         assert_eq!(vendor("00:50:56:ba:22:1d"), Some("VMware, Inc."));
         assert_eq!(vendor("00-50-56-BA-22-1D"), Some("VMware, Inc."));
         assert!(vendor("00:00:00:00:00:01").is_some());
+    }
+
+    #[test]
+    fn subdivided_blocks_have_no_vendor() {
+        // 70:B3:D5 is an IEEE MA-S parent block.
+        assert_eq!(vendor("70:b3:d5:dd:4a:4c"), None);
     }
 
     #[test]

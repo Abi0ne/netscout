@@ -103,8 +103,8 @@ fn main() {
     eprintln!();
 
     println!(
-        "{:<16} {:<18} {:<24} {:<28} {:>8}  OPEN PORTS",
-        "IP", "MAC", "VENDOR", "NAME", "RTT"
+        "{:<16} {:<18} {:<9} {:<24} {:<28} {:>8}  OPEN PORTS",
+        "IP", "MAC", "TYPE", "VENDOR", "NAME", "RTT"
     );
     for host in shared.hosts.lock().unwrap().values() {
         let ports = host
@@ -117,9 +117,10 @@ fn main() {
             .collect::<Vec<_>>()
             .join(" ");
         println!(
-            "{:<16} {:<18} {:<24} {:<28} {:>8}  {}",
+            "{:<16} {:<18} {:<9} {:<24} {:<28} {:>8}  {}",
             host.ip,
             host.mac.as_deref().unwrap_or("-"),
+            format!("{:?}", host.device_type),
             clip(host.vendor.as_deref(), 24),
             clip(host.hostnames.first().map(String::as_str), 28),
             host.rtt_ms
@@ -135,6 +136,13 @@ fn main() {
         summary.total_open_ports,
         summary.elapsed_ms as f64 / 1000.0
     );
+    let mut types = summary.by_device_type;
+    types.sort_by_key(|t| std::cmp::Reverse(t.count));
+    let types: Vec<String> = types
+        .iter()
+        .map(|t| format!("{:?} {}", t.device_type, t.count))
+        .collect();
+    println!("{}", types.join(", "));
 }
 
 /// `-` for a missing value; long values cut to `width` with an ellipsis.
