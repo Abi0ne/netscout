@@ -18,7 +18,7 @@ scripts/  bindgen + XCFramework build automation
 | `core/` | Rust library crate `netscout-core`. Owns its own tokio runtime; streams results through the `ScanObserver` callback interface; cancellable; no root. |
 | `core/src/platform/` | `trait PlatformNet` + per-OS impls selected by `cfg(target_os)`. |
 | `apple/` | macOS app. Links `core` as an arm64 (Apple Silicon) XCFramework. |
-| `scripts/` | `generate-bindings.sh`, `build-xcframework.sh`. |
+| `scripts/` | `generate-bindings.sh`, `build-xcframework.sh`, `update-oui.sh` (refreshes `core/data/oui.tsv`, the embedded MAC-vendor table). |
 | `android/` | Placeholder for the later Kotlin port. |
 
 ## Public core API (UniFFI surface)

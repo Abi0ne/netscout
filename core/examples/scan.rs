@@ -102,7 +102,10 @@ fn main() {
     let summary = rx.recv().expect("scan finished");
     eprintln!();
 
-    println!("{:<16} {:<18} {:>8}  OPEN PORTS", "IP", "MAC", "RTT");
+    println!(
+        "{:<16} {:<18} {:<24} {:<28} {:>8}  OPEN PORTS",
+        "IP", "MAC", "VENDOR", "NAME", "RTT"
+    );
     for host in shared.hosts.lock().unwrap().values() {
         let ports = host
             .open_ports
@@ -114,9 +117,11 @@ fn main() {
             .collect::<Vec<_>>()
             .join(" ");
         println!(
-            "{:<16} {:<18} {:>8}  {}",
+            "{:<16} {:<18} {:<24} {:<28} {:>8}  {}",
             host.ip,
             host.mac.as_deref().unwrap_or("-"),
+            clip(host.vendor.as_deref(), 24),
+            clip(host.hostnames.first().map(String::as_str), 28),
             host.rtt_ms
                 .map(|r| format!("{r:.1}ms"))
                 .unwrap_or_else(|| "-".into()),
@@ -130,4 +135,13 @@ fn main() {
         summary.total_open_ports,
         summary.elapsed_ms as f64 / 1000.0
     );
+}
+
+/// `-` for a missing value; long values cut to `width` with an ellipsis.
+fn clip(s: Option<&str>, width: usize) -> String {
+    match s {
+        None => "-".into(),
+        Some(s) if s.chars().count() <= width => s.into(),
+        Some(s) => s.chars().take(width - 1).chain(['…']).collect(),
+    }
 }

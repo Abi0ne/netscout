@@ -30,6 +30,8 @@ mod engine;
 pub mod error;
 pub mod icmp;
 pub mod liveness;
+pub mod names;
+pub mod oui;
 pub mod platform;
 pub mod scanner;
 pub mod targets;

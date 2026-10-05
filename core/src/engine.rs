@@ -7,10 +7,14 @@
 //!    concurrently. Hosts in flight are bounded by `concurrency`; open
 //!    sockets by a budget derived from the process fd limit.
 //! 3. **ARP** — after the sweep the OS ARP cache holds the neighbours our
-//!    probes just resolved: their MACs are attached to known hosts, and
-//!    in-target addresses that answered ARP but nothing else are reported too
-//!    (devices that drop ping and every probed port).
-//! 4. **Finish** — `on_finished` with the summary. A cancelled scan stops at
+//!    probes just resolved: their MACs (and the MACs' IEEE vendors) are
+//!    attached to known hosts, and in-target addresses that answered ARP but
+//!    nothing else are reported too (devices that drop ping and every probed
+//!    port).
+//! 4. **Names** — mDNS, NetBIOS and reverse DNS for every discovered host,
+//!    concurrently, bounded by a deadline (see `names`); hosts that get a
+//!    name are re-emitted.
+//! 5. **Finish** — `on_finished` with the summary. A cancelled scan stops at
 //!    the next await point and emits nothing further.
 
 use std::collections::{HashMap, HashSet};
@@ -25,6 +29,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::ScanError;
 use crate::icmp::{self, PingClient};
+use crate::names;
+use crate::oui;
 use crate::platform;
 use crate::targets;
 use crate::tcp_probe;
@@ -39,6 +45,10 @@ pub const MAX_HOSTS: u64 = 65_536;
 const MAX_CONCURRENCY: usize = 1024;
 /// Minimum interval between two `on_progress` events.
 const PROGRESS_EVERY: Duration = Duration::from_millis(150);
+/// Reverse-DNS lookups in flight at once, and the deadline for each name
+/// source.
+const NAME_CONCURRENCY: usize = 32;
+const NAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Discovery ports per profile: common services across routers, computers,
 /// phones, printers, NAS, cameras and media devices.
@@ -228,6 +238,13 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
     if cancel.is_cancelled() {
         return;
     }
+    if cancel
+        .run_until_cancelled(resolve_names(&ctx))
+        .await
+        .is_none()
+    {
+        return;
+    }
 
     let summary = summarize(&ctx);
     ctx.report(ScanPhase::Done, true);
@@ -307,6 +324,7 @@ fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr]) {
         let updated = {
             let mut hosts = ctx.lock_hosts();
             hosts.get_mut(&addr).map(|h| {
+                h.vendor = oui::vendor(&mac).map(str::to_string);
                 h.mac = Some(mac.clone());
                 h.clone()
             })
@@ -315,8 +333,8 @@ fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr]) {
             Some(h) => ctx.observer.on_host(h),
             None => ctx.add_host(Host {
                 ip,
+                vendor: oui::vendor(&mac).map(str::to_string),
                 mac: Some(mac),
-                vendor: None,
                 hostnames: Vec::new(),
                 device_type: DeviceType::Unknown,
                 open_ports: Vec::new(),
@@ -328,6 +346,69 @@ fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr]) {
             }),
         }
     }
+}
+
+/// Name every discovered host (see module docs, step 4): mDNS, NetBIOS and
+/// reverse DNS run concurrently; each host keeps the distinct names found, in
+/// that order of preference, and is re-emitted if it got any.
+async fn resolve_names(ctx: &Ctx) {
+    let ips: Vec<Ipv4Addr> = ctx.lock_hosts().keys().copied().collect();
+    let (mdns, netbios, dns) = tokio::join!(
+        names::mdns_names(&ips, NAME_TIMEOUT),
+        names::netbios_names(&ips, NAME_TIMEOUT),
+        reverse_dns(&ips),
+    );
+    for ip in ips {
+        let mut found: Vec<String> = Vec::new();
+        for name in [mdns.get(&ip), netbios.get(&ip), dns.get(&ip)]
+            .into_iter()
+            .flatten()
+        {
+            if !found.iter().any(|f| f.eq_ignore_ascii_case(name)) {
+                found.push(name.clone());
+            }
+        }
+        if found.is_empty() {
+            continue;
+        }
+        let updated = ctx.lock_hosts().get_mut(&ip).map(|h| {
+            h.hostnames = found;
+            h.clone()
+        });
+        if let Some(h) = updated {
+            ctx.observer.on_host(h);
+        }
+    }
+    ctx.report(ScanPhase::Resolving, true);
+}
+
+/// Reverse DNS for `ips` on the blocking pool, at most [`NAME_CONCURRENCY`]
+/// lookups at once, each abandoned after [`NAME_TIMEOUT`].
+async fn reverse_dns(ips: &[Ipv4Addr]) -> HashMap<Ipv4Addr, String> {
+    let limit = Arc::new(Semaphore::new(NAME_CONCURRENCY));
+    let mut lookups = JoinSet::new();
+    for &ip in ips {
+        let Ok(permit) = Arc::clone(&limit).acquire_owned().await else {
+            break;
+        };
+        lookups.spawn(async move {
+            // The permit lives as long as the blocking call, so a lookup the
+            // resolver never answers still counts against the limit.
+            let lookup = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                names::reverse_lookup(ip)
+            });
+            let name = tokio::time::timeout(NAME_TIMEOUT, lookup).await;
+            (ip, name.ok().and_then(|r| r.ok()).flatten())
+        });
+    }
+    let mut out = HashMap::new();
+    while let Some(done) = lookups.join_next().await {
+        if let Ok((ip, Some(name))) = done {
+            out.insert(ip, name);
+        }
+    }
+    out
 }
 
 fn summarize(ctx: &Ctx) -> Summary {
