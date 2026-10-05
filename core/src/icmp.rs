@@ -14,10 +14,15 @@
 //! demultiplexes replies by (source IP, sequence) after checking magic and
 //! token, which uniquely identifies each in-flight request.
 //!
-//! * One socket, one receiver thread, N in-flight requests.
+//! * One socket, one sender thread, one receiver thread, N in-flight requests.
+//! * Sends never run on the async runtime: macOS can block `sendto` on a
+//!   socket indefinitely (e.g. while the Local Network permission prompt is
+//!   pending), which would stall every runtime worker. The sender thread
+//!   absorbs that; a request whose send never happens just times out.
 //! * RTT is measured against a `sent_at` instant captured just before `send`.
 //! * A request resolves when its reply is matched or its timeout elapses.
-//! * Dropping the client stops the receiver thread within ~100 ms.
+//! * Dropping the client stops the receiver thread within ~100 ms; the sender
+//!   thread exits once its queue is drained (or is abandoned if stuck).
 //!
 //! Availability: [`ping_available`] is true on macOS and on Linux when the
 //! process gid is inside `net.ipv4.ping_group_range`; false on Android (no
@@ -29,6 +34,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -66,11 +72,16 @@ struct Pending {
 
 type PendingMap = Mutex<HashMap<(Ipv4Addr, u16), Pending>>;
 
-/// An ICMP echo client: one blocking datagram socket + one receiver thread.
+/// One queued echo request: destination, sequence, datagram.
+type Outgoing = (Ipv4Addr, u16, [u8; ICMP_HEADER + PAYLOAD]);
+
+/// An ICMP echo client: one blocking datagram socket, a sender thread and a
+/// receiver thread.
 ///
 /// Share across host tasks via `Arc`; every task calls [`PingClient::ping`].
 pub struct PingClient {
-    socket: Socket,
+    /// Queue to the sender thread; `None` once the client is dropping.
+    outgoing: Option<mpsc::Sender<Outgoing>>,
     pending: Arc<PendingMap>,
     next_seq: AtomicU16,
     /// Per-client token echoed in the payload (separates concurrent clients).
@@ -99,8 +110,13 @@ impl PingClient {
         let rx_thread = std::thread::Builder::new()
             .name("icmp-receiver".into())
             .spawn(move || recv_loop(&rx_socket, &rx_pending, &rx_stop, token))?;
+        let (outgoing, queue) = mpsc::channel::<Outgoing>();
+        let tx_pending = Arc::clone(&pending);
+        std::thread::Builder::new()
+            .name("icmp-sender".into())
+            .spawn(move || send_loop(&socket, &queue, &tx_pending))?;
         Ok(Self {
-            socket,
+            outgoing: Some(outgoing),
             pending,
             next_seq: AtomicU16::new(0),
             token,
@@ -113,9 +129,9 @@ impl PingClient {
     /// `timeout`.
     ///
     /// * `Ok(Some(r))` — a reply matched within the window.
-    /// * `Ok(None)`    — sent, but no reply before the timeout (host down, or
-    ///   the path filtered ICMP).
-    /// * `Err(_)`      — the request could not be sent at all.
+    /// * `Ok(None)`    — no reply before the timeout (host down, the path
+    ///   filtered ICMP, or the OS refused or held back the send).
+    /// * `Err(_)`      — the client is shutting down.
     pub async fn ping(
         &self,
         target: Ipv4Addr,
@@ -128,10 +144,13 @@ impl PingClient {
         let sent_at = Instant::now();
         lock(&self.pending).insert((target, seq), Pending { sent_at, tx });
 
-        let addr = SockAddr::from(SocketAddrV4::new(target, 0));
-        if let Err(e) = self.socket.send_to(&datagram, &addr) {
+        let queued = self
+            .outgoing
+            .as_ref()
+            .is_some_and(|q| q.send((target, seq, datagram)).is_ok());
+        if !queued {
             lock(&self.pending).remove(&(target, seq));
-            return Err(e);
+            return Err(io::Error::other("ping client is shutting down"));
         }
 
         match tokio::time::timeout(timeout, rx).await {
@@ -147,6 +166,9 @@ impl PingClient {
 
 impl Drop for PingClient {
     fn drop(&mut self) {
+        // Closing the queue ends the sender thread. It is not joined: if the
+        // OS holds it inside `sendto`, waiting would hang the scan's teardown.
+        self.outgoing = None;
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.rx_thread.take() {
             let _ = t.join();
@@ -159,6 +181,26 @@ impl Drop for PingClient {
 /// or remove).
 fn lock(m: &PendingMap) -> MutexGuard<'_, HashMap<(Ipv4Addr, u16), Pending>> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Send loop: one blocking `send_to` per queued request. `sent_at` is reset
+/// right before the send so RTT excludes queueing; a failed send drops the
+/// pending entry, which resolves that ping as "no reply".
+fn send_loop(socket: &Socket, queue: &mpsc::Receiver<Outgoing>, pending: &PendingMap) {
+    for (target, seq, datagram) in queue {
+        if let Some(p) = lock(pending).get_mut(&(target, seq)) {
+            p.sent_at = Instant::now();
+        } else {
+            continue; // already timed out while queued
+        }
+        let addr = SockAddr::from(SocketAddrV4::new(target, 0));
+        if let Err(e) = socket.send_to_with_flags(&datagram, &addr, libc::MSG_DONTWAIT) {
+            if std::env::var_os("NETSCOUT_DEBUG").is_some() {
+                eprintln!("[netscout-core] icmp send to {target} failed: {e} ({:?})", e.raw_os_error());
+            }
+            lock(pending).remove(&(target, seq));
+        }
+    }
 }
 
 /// Blocking receive loop: `recv_from`, parse the reply, route it to the

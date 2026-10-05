@@ -22,6 +22,10 @@ final class ScanModel {
     /// IPs with a deep single-host scan in flight.
     private(set) var deepScanning: Set<String> = []
 
+    /// Host updates waiting for the next coalesced flush (see `enqueue`).
+    fileprivate var pendingHosts: [String: Host] = [:]
+    fileprivate var flushScheduled = false
+
     private var scanner: Scanner?
     /// Bumped on every start/cancel so late events of an old scan are dropped.
     private var generation = 0
@@ -47,6 +51,7 @@ final class ScanModel {
         guard let scanner else { return }
         do {
             networks = try scanner.detectNetworks()
+            debugLog("networks: \(networks.map { "\($0.interface) \($0.cidr) gw \($0.gateway ?? "-")" })")
             if target.isEmpty,
                let net = networks.first(where: { $0.gateway != nil }) ?? networks.first {
                 target = net.cidr
@@ -65,6 +70,7 @@ final class ScanModel {
         }
         generation += 1
         let gen = generation
+        pendingHosts = [:]
         hosts = [:]
         progress = nil
         summary = nil
@@ -84,7 +90,9 @@ final class ScanModel {
                 observer: observer
             )
             isScanning = true
+            debugLog("scan started: \(trimmed) \(profile)")
         } catch {
+            debugLog("scan failed to start: \(error)")
             errorMessage = "\(error)"
         }
     }
@@ -92,6 +100,7 @@ final class ScanModel {
     func cancel() {
         try? scanner?.cancel()
         generation += 1
+        pendingHosts = [:]
         isScanning = false
         deepScanning = []
     }
@@ -119,18 +128,42 @@ final class ScanModel {
     }
 
     private func apply(_ event: ScanEvent, generation gen: Int) {
+        debugLog("event: \(event)")
         guard gen == generation else { return }
         switch event {
         case .host(let host):
-            hosts[host.ip] = host
+            enqueue(host)
         case .progress(let p):
             progress = p
         case .finished(let s):
+            flushHosts()
             summary = s
             isScanning = false
         case .error(let message):
             errorMessage = message
         }
+    }
+}
+
+extension ScanModel {
+    /// Hosts arrive in bursts (one event per discovery, MAC, name, type…).
+    /// Applying each one separately makes the table reload hundreds of times
+    /// and trips AppKit's reentrancy checks, so updates are coalesced and
+    /// applied at most every 150 ms.
+    fileprivate func enqueue(_ host: Host) {
+        pendingHosts[host.ip] = host
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            MainActor.assumeIsolated { self?.flushHosts() }
+        }
+    }
+
+    fileprivate func flushHosts() {
+        flushScheduled = false
+        guard !pendingHosts.isEmpty else { return }
+        hosts.merge(pendingHosts) { _, new in new }
+        pendingHosts = [:]
     }
 }
 
@@ -161,6 +194,12 @@ final class ObserverBridge: ScanObserver, @unchecked Sendable {
     func onProgress(progress: NetScoutCore.Progress) { send(.progress(progress)) }
     func onFinished(summary: Summary) { send(.finished(summary)) }
     func onError(message: String) { send(.error(message)) }
+}
+
+/// Diagnostics on stderr, enabled by `NETSCOUT_DEBUG=1`.
+func debugLog(_ message: @autoclosure () -> String) {
+    guard ProcessInfo.processInfo.environment["NETSCOUT_DEBUG"] != nil else { return }
+    FileHandle.standardError.write(Data("[netscout] \(message())\n".utf8))
 }
 
 /// Numeric value of a dotted IPv4 address, for sorting.
