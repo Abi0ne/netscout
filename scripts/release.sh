@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Publish a NetScout release on GitHub: the app installs it through its
 # updater (apple/Sources/NetScout/Updater.swift), which looks for the latest
-# release tagged v<version> carrying NetScout.zip.
+# release tagged v<version> carrying NetScout.zip. The release also carries
+# NetScout-<version>.dmg (scripts/make-dmg.sh) for new installs.
 #
 #   1. bump `version` in Cargo.toml ([workspace.package]) and commit
 #   2. scripts/release.sh [notes.md]     # notes default to GitHub's generated ones
@@ -31,6 +32,9 @@ mkdir -p dist
 ZIP="dist/NetScout.zip"
 rm -f "$ZIP"
 ditto -c -k --sequesterRsrc --keepParent apple/build/NetScout.app "$ZIP"
+# The disk image people download to install; the updater uses the zip.
+"$HERE/make-dmg.sh"
+DMG="dist/NetScout-$VERSION.dmg"
 
 echo ">> tagging $TAG and pushing"
 git tag -a "$TAG" -m "NetScout $VERSION"
@@ -38,8 +42,8 @@ git push origin main "$TAG"
 
 echo ">> publishing the release"
 if [ -n "$NOTES" ]; then
-  gh release create "$TAG" "$ZIP" --title "NetScout $VERSION" --notes-file "$NOTES"
+  gh release create "$TAG" "$ZIP" "$DMG" --title "NetScout $VERSION" --notes-file "$NOTES"
 else
-  gh release create "$TAG" "$ZIP" --title "NetScout $VERSION" --generate-notes
+  gh release create "$TAG" "$ZIP" "$DMG" --title "NetScout $VERSION" --generate-notes
 fi
 echo ">> released NetScout $VERSION"
