@@ -15,7 +15,7 @@ struct NetScoutApp: App {
                 .frame(minWidth: 900, minHeight: 520)
                 .task { await updater.check(quiet: true) }
         }
-        .defaultSize(width: 1200, height: 720)
+        .defaultSize(width: 1440, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Controlla aggiornamenti…") {

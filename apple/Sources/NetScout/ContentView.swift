@@ -39,38 +39,63 @@ struct ContentView: View {
     @ViewState private var selection: String?
     @ViewState private var typeFilter: DeviceType?
     @ViewState private var search = ""
+    @ViewState private var showDetail = true
 
     var body: some View {
         NavigationSplitView {
             SidebarView(typeFilter: $typeFilter)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 340)
-        } content: {
-            HostTableView(hosts: visibleHosts, selection: $selection)
-                .navigationSplitViewColumnWidth(min: 520, ideal: 680)
-                .searchable(text: $search, placement: .toolbar, prompt: "IP, nome, produttore, MAC")
-                .overlay { emptyState }
         } detail: {
-            if let ip = selection, let host = model.hosts[ip] {
-                HostDetailView(host: host)
-            } else {
-                ContentUnavailableView(
-                    "Nessun dispositivo selezionato",
-                    systemImage: "network",
-                    description: Text("Seleziona un dispositivo dalla lista.")
-                )
+            // The scan table takes all the width; the device card is a narrow
+            // inspector on the right.
+            HostTableView(hosts: visibleHosts, offline: visibleOffline, selection: $selection) { id in
+                if selection == id { selection = nil }
+                model.forgetOffline(id: id)
+            }
+            .searchable(text: $search, placement: .toolbar, prompt: "IP, nome, produttore, MAC")
+            .overlay { emptyState }
+            .inspector(isPresented: $showDetail) {
+                hostDetail
+                    .inspectorColumnWidth(min: 280, ideal: 320, max: 440)
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showDetail.toggle()
+                    } label: {
+                        Label("Scheda dispositivo", systemImage: "sidebar.right")
+                    }
+                    .help(showDetail ? "Nascondi la scheda del dispositivo" : "Mostra la scheda del dispositivo")
+                }
             }
         }
         .navigationTitle("NetScout")
     }
 
-    private var visibleHosts: [Host] {
-        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
-        return model.sortedHosts.filter { host in
-            if let typeFilter, host.deviceType != typeFilter { return false }
-            guard !query.isEmpty else { return true }
-            let fields = [host.ip, host.mac ?? "", host.vendor ?? ""] + host.hostnames
-            return fields.contains { $0.lowercased().contains(query) }
+    @ViewBuilder
+    private var hostDetail: some View {
+        if let id = selection, let host = model.hosts[id] {
+            HostDetailView(host: host)
+        } else if let id = selection, let host = model.offlineHosts[id] {
+            HostDetailView(host: host, offline: true)
+        } else {
+            ContentUnavailableView(
+                "Nessun dispositivo selezionato",
+                systemImage: "network",
+                description: Text("Seleziona un dispositivo dalla lista.")
+            )
         }
+    }
+
+    private var visibleHosts: [Host] { model.sortedHosts.filter(matches) }
+    private var visibleOffline: [Host] { model.sortedOfflineHosts.filter(matches) }
+
+    private func matches(_ host: Host) -> Bool {
+        if let typeFilter, host.deviceType != typeFilter { return false }
+        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return true }
+        let fields = [host.ip, host.mac ?? "", host.vendor ?? ""] + host.hostnames
+        return fields.contains { $0.lowercased().contains(query) }
     }
 
     @ViewBuilder
@@ -85,7 +110,7 @@ struct ContentView: View {
                     description: Text("Scegli la rete e premi Avvia (⌘R).")
                 )
             }
-        } else if visibleHosts.isEmpty {
+        } else if visibleHosts.isEmpty && visibleOffline.isEmpty {
             ContentUnavailableView.search(text: search)
         }
     }
