@@ -8,6 +8,7 @@ struct HostDetailView: View {
     /// Known from a profile but not found by this scan.
     var offline = false
     @ViewState private var connecting: ConnectRequest?
+    @ViewState private var merlinFailure: String?
 
     var body: some View {
         ScrollView {
@@ -102,6 +103,11 @@ struct HostDetailView: View {
     private var portsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(offline ? "Porte aperte (all'ultimo rilevamento)" : "Porte aperte").font(.headline)
+            if let merlinFailure {
+                Label(merlinFailure, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
             if host.openPorts.isEmpty {
                 Text("Nessuna tra quelle verificate.").foregroundStyle(.secondary)
             } else {
@@ -117,15 +123,30 @@ struct HostDetailView: View {
                                 .buttonStyle(.link)
                         }
                         if !offline, let kind = RemoteProtocol(port: port) {
-                            Button("Connetti…") {
-                                connecting = ConnectRequest(kind: kind, host: host.ip, port: port.number)
+                            if TerminalLauncher.supports(kind) {
+                                Button("Terminale") {
+                                    connecting = ConnectRequest(kind: kind, host: host.ip, port: port.number)
+                                }
+                                .buttonStyle(.link)
+                                .help("Apri una sessione \(kind.label) nel Terminale")
                             }
-                            .buttonStyle(.link)
-                            .help("Apri una sessione \(kind.label) nel Terminale o in Merlin")
+                            Button("Merlin") { openInMerlin(kind) }
+                                .buttonStyle(.link)
+                                .disabled(MerlinLauncher.unavailableReason != nil)
+                                .help(MerlinLauncher.unavailableReason?.localizedDescription ?? "Apri una sessione \(kind.label) in Merlin")
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func openInMerlin(_ kind: RemoteProtocol) {
+        do {
+            try MerlinLauncher.open(kind, ip: host.ip)
+            merlinFailure = nil
+        } catch {
+            merlinFailure = error.localizedDescription
         }
     }
 

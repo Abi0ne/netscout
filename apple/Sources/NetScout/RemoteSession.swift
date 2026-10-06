@@ -13,14 +13,6 @@ enum RemoteProtocol: String {
         }
     }
 
-    var defaultPort: UInt16 {
-        switch self {
-        case .ssh: 22
-        case .telnet: 23
-        case .rdp: 3389
-        }
-    }
-
     /// The protocol a port speaks, if it is one we can open a session to.
     init?(port: Port) {
         switch (port.service?.lowercased(), port.number) {
@@ -32,17 +24,16 @@ enum RemoteProtocol: String {
     }
 }
 
-/// Opens sessions in Merlin (bundle id `eu.raapp.imeterminal`) through its
-/// URL scheme:
+/// Opens a session in Merlin (bundle id `eu.raapp.imeterminal`) through its
+/// URL scheme, passing only the protocol and the address — Merlin asks for
+/// the user and password itself:
 ///
-///     merlin://ssh/192.168.1.10
-///     merlin://ssh/andrea@192.168.1.10:2222
-///     merlin://rdp/administrator@172.31.31.162
-///     merlin://telnet/10.0.0.5
+///     merlin://ssh/172.31.31.162
+///     merlin://telnet/172.31.31.162
+///     merlin://rdp/172.31.31.162
 ///
-/// The scheme carries no password: Merlin asks for it. Merlin 0.2.0 does not
-/// declare `merlin://` (its Info.plist has no CFBundleURLTypes), so the app
-/// is detected by bundle id and the scheme separately.
+/// Merlin declares `merlin://` from 0.3; older versions are detected by
+/// bundle id and reported as not handling links.
 enum MerlinLauncher {
     static let bundleIdentifier = "eu.raapp.imeterminal"
 
@@ -53,17 +44,17 @@ enum MerlinLauncher {
 
     static var isInstalled: Bool { appURL != nil }
 
-    /// The installed version, e.g. "0.2.0".
+    /// The installed version, e.g. "0.3.1".
     static var version: String? {
         appURL.flatMap { Bundle(url: $0)?.infoDictionary?["CFBundleShortVersionString"] as? String }
     }
 
-    /// Some app (Merlin, once it declares the scheme) handles `merlin://`.
+    /// Some app (Merlin from 0.3) handles `merlin://`.
     static var handlesLinks: Bool {
         NSWorkspace.shared.urlForApplication(toOpen: URL(string: "merlin://ssh/127.0.0.1")!) != nil
     }
 
-    /// Why a session cannot be opened in Merlin, if it cannot.
+    /// Why a device cannot be opened in Merlin, if it cannot.
     static var unavailableReason: LaunchError? {
         if !isInstalled { return .notInstalled }
         if !handlesLinks { return .linksUnsupported(version: version) }
@@ -87,21 +78,13 @@ enum MerlinLauncher {
         }
     }
 
-    /// `merlin://<protocol>/[user@]host[:port]`; the port only when it is not
-    /// the protocol's default.
-    static func url(_ kind: RemoteProtocol, host: String, port: UInt16, user: String) -> URL? {
-        var target = host
-        if !user.isEmpty {
-            guard let encoded = user.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed) else { return nil }
-            target = "\(encoded)@\(host)"
-        }
-        if port != kind.defaultPort { target += ":\(port)" }
-        return URL(string: "merlin://\(kind.rawValue)/\(target)")
+    static func url(_ kind: RemoteProtocol, ip: String) -> URL? {
+        URL(string: "merlin://\(kind.rawValue)/\(ip)")
     }
 
-    static func open(_ kind: RemoteProtocol, host: String, port: UInt16, user: String) throws {
+    static func open(_ kind: RemoteProtocol, ip: String) throws {
         if let reason = unavailableReason { throw reason }
-        guard let url = url(kind, host: host, port: port, user: user) else { throw LaunchError.invalidAddress }
+        guard let url = url(kind, ip: ip) else { throw LaunchError.invalidAddress }
         NSWorkspace.shared.open(url)
     }
 }
