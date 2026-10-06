@@ -32,6 +32,20 @@ final class Updater {
     }
 
     private(set) var state: State = .idle
+    /// When GitHub last answered a check.
+    private(set) var lastCheck: Date?
+
+    static let automaticKey = "updates.automatic"
+    /// Install new versions without asking (Settings → Aggiornamento). Off
+    /// until the user turns it on.
+    private(set) var automatic = UserDefaults.standard.bool(forKey: automaticKey)
+    /// True while the app is busy with something an automatic restart would
+    /// interrupt (a scan); the install waits for it.
+    var isBusy: @MainActor () -> Bool = { false }
+    private var autoInstalling = false
+
+    /// How often the app looks for a new version while it runs.
+    private static let checkInterval: Duration = .seconds(6 * 3600)
 
     /// The running version (Info.plist), or the workspace version when the
     /// app runs outside its bundle (`swift run`).
@@ -45,6 +59,35 @@ final class Updater {
             && FileManager.default.isWritableFile(atPath: Bundle.main.bundleURL.deletingLastPathComponent().path)
     }
 
+    func setAutomatic(_ on: Bool) {
+        automatic = on
+        UserDefaults.standard.set(on, forKey: Self.automaticKey)
+        if on { Task { await installIfAutomatic() } }
+    }
+
+    /// Check at launch and then periodically, for the app's whole life; with
+    /// automatic updates on, install what is found.
+    func runPeriodicChecks() async {
+        while !Task.isCancelled {
+            await check(quiet: true)
+            await installIfAutomatic()
+            try? await Task.sleep(for: Self.checkInterval)
+        }
+    }
+
+    /// With automatic updates on and a new version found, install it as soon
+    /// as the app is not busy.
+    private func installIfAutomatic() async {
+        guard automatic, Self.canInstall, !autoInstalling else { return }
+        autoInstalling = true
+        defer { autoInstalling = false }
+        while automatic, case .available = state, isBusy() {
+            try? await Task.sleep(for: .seconds(30))
+        }
+        guard automatic, case .available(let release) = state else { return }
+        await install(release)
+    }
+
     /// Ask GitHub for the latest release. `quiet` keeps errors out of the UI
     /// (the automatic check at launch, possibly offline).
     func check(quiet: Bool = false) async {
@@ -52,6 +95,7 @@ final class Updater {
         state = .checking
         do {
             let release = try await Self.latestRelease()
+            lastCheck = Date()
             if let release, Self.isNewer(release.version, than: Self.currentVersion) {
                 state = .available(release)
             } else {

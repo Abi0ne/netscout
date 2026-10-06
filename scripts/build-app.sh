@@ -33,6 +33,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key><string>NetScout</string>
+    <key>CFBundleDevelopmentRegion</key><string>it</string>
+    <key>CFBundleLocalizations</key><array><string>it</string></array>
     <key>CFBundleDisplayName</key><string>NetScout</string>
     <key>CFBundleIdentifier</key><string>dev.netscout.NetScout</string>
     <key>CFBundleExecutable</key><string>NetScout</string>

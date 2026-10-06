@@ -1,3 +1,4 @@
+import AppKit
 import NetScoutCore
 import SwiftUI
 
@@ -15,6 +16,14 @@ struct RootView: View {
                 .tabItem { Label("Profili salvati", systemImage: "archivebox") }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
+        // The app name sits in the middle of the toolbar instead of the
+        // standard title on the left.
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("NetScout").font(.headline)
+            }
+        }
+        .background(WindowTitleHider())
         .sheet(item: $model.comparison) { comparison in
             ComparisonView(comparison: comparison)
         }
@@ -30,6 +39,20 @@ struct RootView: View {
         } message: { message in
             Text(message)
         }
+    }
+}
+
+/// Hides the window's own title (it stays the window's name in the Window
+/// menu and Mission Control) so only the centred one shows.
+private struct WindowTitleHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { view.window?.titleVisibility = .hidden }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        nsView.window?.titleVisibility = .hidden
     }
 }
 

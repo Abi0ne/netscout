@@ -9,6 +9,7 @@ struct HostDetailView: View {
     var offline = false
     @ViewState private var connecting: ConnectRequest?
     @ViewState private var merlinFailure: String?
+    @AppStorage(MerlinLauncher.enabledKey) private var merlinEnabled = false
 
     var body: some View {
         ScrollView {
@@ -103,7 +104,7 @@ struct HostDetailView: View {
     private var portsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(offline ? "Porte aperte (all'ultimo rilevamento)" : "Porte aperte").font(.headline)
-            if let merlinFailure {
+            if merlinEnabled, let merlinFailure {
                 Label(merlinFailure, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
@@ -130,10 +131,12 @@ struct HostDetailView: View {
                                 .buttonStyle(.link)
                                 .help("Apri una sessione \(kind.label) nel Terminale")
                             }
-                            Button("Merlin") { openInMerlin(kind) }
-                                .buttonStyle(.link)
-                                .disabled(MerlinLauncher.unavailableReason != nil)
-                                .help(MerlinLauncher.unavailableReason?.localizedDescription ?? "Apri una sessione \(kind.label) in Merlin")
+                            if merlinEnabled {
+                                Button("Merlin") { openInMerlin(kind) }
+                                    .buttonStyle(.link)
+                                    .disabled(MerlinLauncher.unavailableReason != nil)
+                                    .help(MerlinLauncher.unavailableReason?.localizedDescription ?? "Apri una sessione \(kind.label) in Merlin")
+                            }
                         }
                     }
                 }

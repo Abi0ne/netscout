@@ -60,8 +60,10 @@ The version lives in `Cargo.toml` (`[workspace.package] version`); the app
 bundle, the window's status bar and the release tag all take it from there.
 
 The app checks the latest GitHub release at launch (and from *NetScout →
-Controlla aggiornamenti…*); when it is newer it offers to download it,
-verifies it and replaces itself. To publish a version:
+Controlla aggiornamenti…*, then every 6 hours); when it is newer it offers to
+download it, verifies it and replaces itself. With *Impostazioni →
+Aggiornamento → Aggiornamenti automatici* on (off by default) it installs
+without asking, once no scan is running. To publish a version:
 
 ```
 # bump version in Cargo.toml, commit, then:

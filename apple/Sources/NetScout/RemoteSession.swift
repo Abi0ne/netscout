@@ -37,6 +37,10 @@ enum RemoteProtocol: String {
 enum MerlinLauncher {
     static let bundleIdentifier = "eu.raapp.imeterminal"
 
+    /// The user default behind Settings → Integrazioni → Merlin; off until
+    /// the user turns it on.
+    static let enabledKey = "integrations.merlin"
+
     /// Where Merlin is installed, if it is.
     static var appURL: URL? {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)

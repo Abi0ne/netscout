@@ -13,7 +13,10 @@ struct NetScoutApp: App {
                 .environment(model)
                 .environment(updater)
                 .frame(minWidth: 900, minHeight: 520)
-                .task { await updater.check(quiet: true) }
+                .task {
+                    updater.isBusy = { [model] in model.isScanning }
+                    await updater.runPeriodicChecks()
+                }
         }
         .defaultSize(width: 1440, height: 820)
         .commands {
@@ -28,7 +31,31 @@ struct NetScoutApp: App {
                 }
                 .keyboardShortcut("r")
             }
+            CommandGroup(replacing: .help) {
+                HelpMenuItem()
+            }
         }
+
+        Settings {
+            SettingsView()
+                .environment(updater)
+        }
+
+        Window("Guida di NetScout", id: HelpMenuItem.windowID) {
+            HelpView()
+        }
+        .defaultSize(width: 900, height: 640)
+    }
+}
+
+/// Aiuto → Guida di NetScout (⌘?).
+private struct HelpMenuItem: View {
+    static let windowID = "help"
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Guida di NetScout") { openWindow(id: Self.windowID) }
+            .keyboardShortcut("?", modifiers: .command)
     }
 }
 
