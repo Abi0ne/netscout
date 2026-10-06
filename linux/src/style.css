@@ -1,0 +1,43 @@
+/* Sidebar and status bar sit on the window's sidebar shade. */
+.sidebar-pane {
+  background-color: var(--sidebar-bg-color);
+}
+
+.status-bar {
+  min-height: 26px;
+  padding: 0 12px;
+  border-top: 1px solid var(--border-color);
+  background-color: var(--headerbar-bg-color);
+}
+
+/* Big device icon in the card header. */
+.device-badge {
+  min-width: 52px;
+  min-height: 52px;
+  border-radius: 12px;
+  color: var(--accent-color);
+  background-color: color-mix(in srgb, var(--accent-bg-color) 14%, transparent);
+}
+
+.off-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--warning-color);
+  background-color: color-mix(in srgb, var(--warning-bg-color) 14%, transparent);
+}
+
+.warning {
+  color: var(--warning-color);
+}
+
+.count-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.help-note {
+  padding: 12px;
+}

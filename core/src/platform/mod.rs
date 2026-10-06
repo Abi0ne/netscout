@@ -2,14 +2,16 @@
 //! scan engine stays 100% shared. The concrete implementation is selected at
 //! compile time with `cfg(target_os)`.
 //!
-//! * `macos`  — real target (probes land in Phase 2).
+//! * `macos`  — getifaddrs + sysctl route dumps.
 //! * `android`— engine has no raw sockets here; Kotlin drives discovery. All
 //!   primitives report [`ScanError::Unsupported`] for now.
-//! * `unix`   — default Unix (Linux) impl: local development + reference for the
-//!   unprivileged techniques.
+//! * `unix`   — default Unix (Linux) impl: getifaddrs + `/proc/net`.
+//! * `ifaddrs`— interface/DNS helpers shared by `macos` and `unix`.
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(not(target_os = "android"))]
+mod ifaddrs;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(not(any(target_os = "macos", target_os = "android")))]

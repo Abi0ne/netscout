@@ -56,6 +56,10 @@ pub use types::{
     ScanObserver, ScanPhase, ScanProfile, ServiceInfo, SsdpInfo, Summary, Transport,
 };
 
+/// The workspace version (`[workspace.package] version`), for UIs built in
+/// Rust that link the core directly (the Linux app).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Wire every `#[derive(uniffi::…)]` / `#[uniffi::…]` item above into the FFI
 // scaffolding. Must be the last item in the crate.
 uniffi::setup_scaffolding!();
@@ -72,7 +76,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn detect_networks_reads_the_os() {
         let s = new_scanner().expect("runtime ok");

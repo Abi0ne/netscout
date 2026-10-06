@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.abi0ne.NetScout</id>
+  <name>NetScout</name>
+  <summary>Find the devices on your local network</summary>
+  <summary xml:lang="it">Trova i dispositivi della rete locale</summary>
+  <developer id="io.github.abi0ne">
+    <name>Giulio Mancarella</name>
+  </developer>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p xml:lang="it">
+      NetScout trova i dispositivi collegati alla rete locale e dice cosa sono:
+      indirizzo IP, MAC, produttore, nome, tipo, latenza e porte aperte. Funziona
+      senza privilegi di amministratore.
+    </p>
+    <p>
+      NetScout finds the devices on your local network and tells you what they
+      are: IP address, MAC, vendor, name, device type, latency and open ports.
+      It needs no administrator privileges.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.abi0ne.NetScout.desktop</launchable>
+  <url type="homepage">https://github.com/Abi0ne/netscout</url>
+  <url type="bugtracker">https://github.com/Abi0ne/netscout/issues</url>
+  <content_rating type="oars-1.1"/>
+</component>

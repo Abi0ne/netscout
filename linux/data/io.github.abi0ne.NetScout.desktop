@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=NetScout
+GenericName=Network Scanner
+GenericName[it]=Scanner di rete
+Comment=Find the devices on your local network
+Comment[it]=Trova i dispositivi della rete locale
+Exec=netscout
+Icon=io.github.abi0ne.NetScout
+Terminal=false
+Categories=Network;Utility;GTK;
+Keywords=network;scanner;lan;ip;mac;port;wake-on-lan;rete;porte;
+StartupNotify=true

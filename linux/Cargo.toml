@@ -1,0 +1,29 @@
+[package]
+name = "netscout-gtk"
+# The app reports the workspace version (`netscout_core::VERSION`); this one
+# is only Cargo's.
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "NetScout for Linux: a GTK4 / libadwaita UI over netscout-core."
+publish = false
+
+[[bin]]
+name = "netscout"
+path = "src/main.rs"
+
+[dependencies]
+# Linked directly (no UniFFI): the same engine the macOS app uses.
+netscout-core = { path = "../core" }
+# GTK 4.16+ / libadwaita 1.7+ (Ubuntu 25.04+, Fedora 42+): ToggleGroup,
+# Spinner, AlertDialog, OverlaySplitView and breakpoints.
+gtk = { package = "gtk4", version = "0.11", features = ["v4_16"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_7"] }
+# Engine callbacks arrive on runtime threads; this hands them to the GTK
+# main loop.
+async-channel = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

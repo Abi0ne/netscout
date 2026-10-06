@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regenerate apple/Resources/AppIcon.icns from scripts/make-icon.swift.
-# Run after changing the drawing; build-app.sh copies the .icns into the app.
+# Regenerate apple/Resources/AppIcon.icns (and the Linux PNGs in
+# linux/data/icons) from scripts/make-icon.swift. Run after changing the
+# drawing; build-app.sh copies the .icns into the app.
 #
 #   scripts/make-icon.sh
 #
@@ -23,3 +24,9 @@ done
 mkdir -p "$(dirname "$OUT")"
 iconutil -c icns "$SET" -o "$OUT"
 echo ">> wrote $OUT"
+for px in 64 128 256 512; do
+  DIR="$ROOT/linux/data/icons/hicolor/${px}x${px}/apps"
+  mkdir -p "$DIR"
+  sips -z "$px" "$px" "$WORK/master.png" --out "$DIR/io.github.abi0ne.NetScout.png" >/dev/null
+done
+echo ">> wrote linux/data/icons"

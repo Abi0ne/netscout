@@ -1,10 +1,11 @@
 [workspace]
 # Only the Rust core is a workspace member. `apple/` (Swift) and `android/`
 # (Kotlin) live outside the Cargo workspace by design: they consume the core
-# as a prebuilt XCFramework / AAR, never as workspace members.
+# as a prebuilt XCFramework / AAR, never as workspace members. `linux/` (GTK4)
+# is a separate Cargo project so the core still builds on hosts without GTK.
 resolver = "2"
 members = ["core"]
-exclude = ["apple", "android"]
+exclude = ["apple", "android", "linux"]
 
 [workspace.package]
 version = "0.1.5"
