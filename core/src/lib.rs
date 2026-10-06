@@ -10,10 +10,10 @@
 //!   [`Scanner`] handle (associated constructors are not supported in
 //!   library-mode proc-macro UniFFI, so the constructor is a free function).
 //! * [`Scanner`] — the engine object: `detect_networks`, `set_network_info`,
-//!   `start_scan`, `cancel`, `scan_host`.
+//!   `start_scan`, `cancel`, `scan_host`, `wake_on_lan`.
 //! * [`ScanObserver`] — callback interface the engine streams results through.
 //! * [`ProfileStore`] (via `open_profile_store(dir)`) — saved scans:
-//!   `list`, `load`, `save`, `rename`, `delete`; `diff_hosts` compares a scan
+//!   `list`, `load`, `save`, `update`, `rename`, `delete`; `diff_hosts` compares a scan
 //!   with a saved profile (`ScanDiff`, `HostChange`).
 //! * [`ScanError`] — the FFI error enum.
 //! * Records: `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`,
@@ -42,6 +42,7 @@ pub mod scanner;
 pub mod targets;
 pub mod tcp_probe;
 pub mod types;
+pub mod wol;
 
 pub use error::ScanError;
 pub use platform::requires_multicast_lock;

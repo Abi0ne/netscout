@@ -163,6 +163,16 @@ impl Scanner {
         Ok(())
     }
 
+    /// Wake the device with MAC `mac` (Wake-on-LAN). `ip`, where the device
+    /// was last seen, picks the network to broadcast on; without it every
+    /// local network gets the packet. Blocking but instant (a few UDP sends).
+    pub fn wake_on_lan(self: Arc<Self>, mac: String, ip: Option<String>) -> Result<(), ScanError> {
+        let mac = crate::wol::parse_mac(&mac)?;
+        let ip = ip.and_then(|ip| ip.trim().parse::<Ipv4Addr>().ok());
+        let networks = self.detect_networks().unwrap_or_default();
+        crate::wol::send(mac, &crate::wol::broadcasts(ip, &networks))
+    }
+
     /// Scan a single host and stream its data through `observer` using the same
     /// protocol as `start_scan` (`on_host` → `on_finished`). Non-blocking.
     pub fn scan_host(

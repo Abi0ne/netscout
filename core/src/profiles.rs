@@ -3,13 +3,17 @@
 //! A *profile* is a named snapshot of a finished scan (its hosts plus what was
 //! scanned and how), stored as one JSON file per profile in a directory the
 //! platform chooses (Application Support on macOS, `filesDir` on Android).
-//! [`diff_hosts`] compares a scan against a profile's hosts.
+//! A profile also remembers devices that were known but off when it was
+//! saved (`offline_hosts`), so they can still be woken (Wake-on-LAN) and are
+//! not reported as new when they come back. [`diff_hosts`] compares a scan
+//! against a profile.
 //!
 //! ```text
 //! let store = open_profile_store(dir)?;
 //! let saved = store.save("Ufficio", "192.168.1.0/24", ScanProfile::Standard, hosts)?;
 //! let baseline = store.load(saved.id)?;
-//! let diff = diff_hosts(baseline.hosts, new_hosts);
+//! let diff = diff_hosts(baseline.hosts, baseline.offline_hosts, new_hosts);
+//! store.update(saved.id, target, profile, new_hosts, now_off)?;
 //! ```
 
 use std::collections::{BTreeSet, HashMap};
@@ -38,7 +42,14 @@ pub struct SavedProfile {
     /// The scan depth used; comparing scans of different depths reports
     /// ports that were simply not probed as closed.
     pub scan_profile: ScanProfile,
+    /// Devices up when the profile was saved.
     pub hosts: Vec<Host>,
+    /// Devices known from earlier scans but off when the profile was saved.
+    #[serde(default)]
+    pub offline_hosts: Vec<Host>,
+    /// Epoch ms of the last [`ProfileStore::update`], if any.
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 /// A profile without its hosts, for listings.
@@ -50,6 +61,8 @@ pub struct ProfileSummary {
     pub target: String,
     pub scan_profile: ScanProfile,
     pub host_count: u32,
+    pub offline_count: u32,
+    pub updated_at: Option<i64>,
 }
 
 impl From<&SavedProfile> for ProfileSummary {
@@ -61,6 +74,8 @@ impl From<&SavedProfile> for ProfileSummary {
             target: p.target.clone(),
             scan_profile: p.scan_profile,
             host_count: p.hosts.len() as u32,
+            offline_count: p.offline_hosts.len() as u32,
+            updated_at: p.updated_at,
         }
     }
 }
@@ -107,13 +122,15 @@ impl ProfileStore {
         read_file(&self.path(&id)?)
     }
 
-    /// Save `hosts` as a new profile called `name`.
+    /// Save a scan as a new profile called `name`: the `hosts` found up and
+    /// the `offline_hosts` known to be off.
     pub fn save(
         self: Arc<Self>,
         name: String,
         target: String,
         scan_profile: ScanProfile,
         hosts: Vec<Host>,
+        offline_hosts: Vec<Host>,
     ) -> Result<ProfileSummary, ScanError> {
         let name = name.trim().to_string();
         if name.is_empty() {
@@ -132,7 +149,29 @@ impl ProfileStore {
             target,
             scan_profile,
             hosts,
+            offline_hosts,
+            updated_at: None,
         };
+        self.write(&profile)?;
+        Ok(ProfileSummary::from(&profile))
+    }
+
+    /// Replace the devices of profile `id` with a newer scan, keeping its
+    /// name and creation date.
+    pub fn update(
+        self: Arc<Self>,
+        id: String,
+        target: String,
+        scan_profile: ScanProfile,
+        hosts: Vec<Host>,
+        offline_hosts: Vec<Host>,
+    ) -> Result<ProfileSummary, ScanError> {
+        let mut profile = read_file(&self.path(&id)?)?;
+        profile.target = target;
+        profile.scan_profile = scan_profile;
+        profile.hosts = hosts;
+        profile.offline_hosts = offline_hosts;
+        profile.updated_at = Some(now_ms());
         self.write(&profile)?;
         Ok(ProfileSummary::from(&profile))
     }
@@ -219,6 +258,8 @@ pub struct HostChange {
     pub before: Host,
     /// The device as found now.
     pub after: Host,
+    /// The profile had it as off; it is up again.
+    pub came_back: bool,
     pub ip_changed: bool,
     pub mac_changed: bool,
     pub vendor_changed: bool,
@@ -236,31 +277,49 @@ pub struct HostChange {
 pub struct ScanDiff {
     /// In the new scan only.
     pub added: Vec<Host>,
-    /// In the profile only.
+    /// Up in the profile, not found now: off, or gone.
     pub removed: Vec<Host>,
-    /// In both, with differences.
+    /// Off in the profile and still not found.
+    pub still_offline: Vec<Host>,
+    /// Found in both. Includes devices back up (`came_back`) and devices
+    /// that moved to another IP (`ip_changed`, matched by MAC).
     pub changed: Vec<HostChange>,
+    /// The profile's device at an IP (`before`) and a different device, by
+    /// MAC, at that IP now (`after`). The old device is not found elsewhere.
+    pub replaced: Vec<HostChange>,
     /// In both, identical.
     pub unchanged: u32,
 }
 
-/// Compare a profile's hosts (`baseline`) with a new scan (`current`).
+/// Compare a profile (`baseline` up, `baseline_offline` off) with a new scan
+/// (`current`).
 ///
 /// Devices are matched by MAC first, so a device that got a new DHCP lease is
 /// reported as "IP changed" rather than as one removed and one added device.
-/// Hosts left over are matched by IP, unless both sides have a MAC and the
-/// MACs differ: that is a different device on a reused address.
+/// Hosts left over are matched by IP; when both sides have a MAC and the
+/// MACs differ, a different device now uses the address (`replaced`).
 #[uniffi::export]
-pub fn diff_hosts(baseline: Vec<Host>, current: Vec<Host>) -> ScanDiff {
-    let mut old: Vec<Option<Host>> = baseline.into_iter().map(Some).collect();
-    let mut pairs: Vec<(Host, Host)> = Vec::new();
+pub fn diff_hosts(
+    baseline: Vec<Host>,
+    baseline_offline: Vec<Host>,
+    current: Vec<Host>,
+) -> ScanDiff {
+    // (host, was it off in the profile)
+    let mut old: Vec<Option<(Host, bool)>> = baseline
+        .into_iter()
+        .map(|h| Some((h, false)))
+        .chain(baseline_offline.into_iter().map(|h| Some((h, true))))
+        .collect();
+    let mut pairs: Vec<(Host, bool, Host)> = Vec::new();
     let mut unmatched: Vec<Host> = Vec::new();
 
-    let by_mac: HashMap<String, usize> = old
-        .iter()
-        .enumerate()
-        .filter_map(|(i, h)| Some((norm_mac(h.as_ref()?.mac.as_deref()?), i)))
-        .collect();
+    let mut by_mac: HashMap<String, usize> = HashMap::new();
+    for (i, entry) in old.iter().enumerate() {
+        if let Some(mac) = entry.as_ref().and_then(|(h, _)| h.mac.as_deref()) {
+            // Up devices first: an off copy of the same MAC never shadows them.
+            by_mac.entry(norm_mac(mac)).or_insert(i);
+        }
+    }
     for host in current {
         let slot = host
             .mac
@@ -268,48 +327,68 @@ pub fn diff_hosts(baseline: Vec<Host>, current: Vec<Host>) -> ScanDiff {
             .map(norm_mac)
             .and_then(|m| by_mac.get(&m));
         match slot.and_then(|&i| old[i].take()) {
-            Some(before) => pairs.push((before, host)),
+            Some((before, off)) => pairs.push((before, off, host)),
             None => unmatched.push(host),
         }
     }
 
     let mut added = Vec::new();
+    let mut replaced = Vec::new();
     for host in unmatched {
-        let slot = old.iter().position(|o| {
-            o.as_ref().is_some_and(|b| {
-                b.ip == host.ip
-                    && !matches!((&b.mac, &host.mac), (Some(x), Some(y)) if norm_mac(x) != norm_mac(y))
-            })
-        });
+        let slot = old
+            .iter()
+            .position(|o| o.as_ref().is_some_and(|(b, _)| b.ip == host.ip));
         match slot.and_then(|i| old[i].take()) {
-            Some(before) => pairs.push((before, host)),
+            Some((before, off)) => {
+                let conflict = matches!((&before.mac, &host.mac),
+                    (Some(x), Some(y)) if norm_mac(x) != norm_mac(y));
+                if conflict {
+                    replaced.push(change(before, false, host));
+                } else {
+                    pairs.push((before, off, host));
+                }
+            }
             None => added.push(host),
         }
     }
 
     let mut changed = Vec::new();
     let mut unchanged = 0;
-    for (before, after) in pairs {
-        match compare(before, after) {
-            Some(change) => changed.push(change),
-            None => unchanged += 1,
+    for (before, off, after) in pairs {
+        let c = change(before, off, after);
+        if c.differs() {
+            changed.push(c);
+        } else {
+            unchanged += 1;
         }
     }
 
-    let mut removed: Vec<Host> = old.into_iter().flatten().collect();
+    let mut removed = Vec::new();
+    let mut still_offline = Vec::new();
+    for (host, off) in old.into_iter().flatten() {
+        if off {
+            still_offline.push(host);
+        } else {
+            removed.push(host);
+        }
+    }
     added.sort_by_key(|h| ip_key(&h.ip));
     removed.sort_by_key(|h| ip_key(&h.ip));
+    still_offline.sort_by_key(|h| ip_key(&h.ip));
     changed.sort_by_key(|c| ip_key(&c.after.ip));
+    replaced.sort_by_key(|c| ip_key(&c.after.ip));
     ScanDiff {
         added,
         removed,
+        still_offline,
         changed,
+        replaced,
         unchanged,
     }
 }
 
-/// `Some` when the two sides of a matched device differ.
-fn compare(before: Host, after: Host) -> Option<HostChange> {
+/// The differences between the two sides of a matched device.
+fn change(before: Host, came_back: bool, after: Host) -> HostChange {
     let ports = |h: &Host| -> BTreeSet<u16> {
         h.open_ports
             .iter()
@@ -329,7 +408,8 @@ fn compare(before: Host, after: Host) -> Option<HostChange> {
         _ => false,
     };
 
-    let change = HostChange {
+    HostChange {
+        came_back,
         ip_changed: before.ip != after.ip,
         mac_changed: learned_differently(&before.mac, &after.mac),
         vendor_changed: learned_differently(&before.vendor, &after.vendor),
@@ -341,16 +421,21 @@ fn compare(before: Host, after: Host) -> Option<HostChange> {
         removed_hostnames: old_names.difference(&new_names).cloned().collect(),
         before,
         after,
-    };
-    let differs = change.ip_changed
-        || change.mac_changed
-        || change.vendor_changed
-        || change.device_type_changed
-        || !change.opened_ports.is_empty()
-        || !change.closed_ports.is_empty()
-        || !change.added_hostnames.is_empty()
-        || !change.removed_hostnames.is_empty();
-    differs.then_some(change)
+    }
+}
+
+impl HostChange {
+    fn differs(&self) -> bool {
+        self.came_back
+            || self.ip_changed
+            || self.mac_changed
+            || self.vendor_changed
+            || self.device_type_changed
+            || !self.opened_ports.is_empty()
+            || !self.closed_ports.is_empty()
+            || !self.added_hostnames.is_empty()
+            || !self.removed_hostnames.is_empty()
+    }
 }
 
 fn norm_mac(mac: &str) -> String {
@@ -399,7 +484,7 @@ mod tests {
         let mut b = a.clone();
         b[0].rtt_ms = Some(9.0);
         b[0].last_seen = 42;
-        let d = diff_hosts(a, b);
+        let d = diff_hosts(a, vec![], b);
         assert!(d.added.is_empty() && d.removed.is_empty() && d.changed.is_empty());
         assert_eq!(d.unchanged, 1);
     }
@@ -414,7 +499,7 @@ mod tests {
             host("10.0.0.1", Some("AA:00:00:00:00:01"), &[80, 443]),
             host("10.0.0.3", None, &[]),
         ];
-        let d = diff_hosts(old, new);
+        let d = diff_hosts(old, vec![], new);
         assert_eq!(d.added.len(), 1);
         assert_eq!(d.added[0].ip, "10.0.0.3");
         assert_eq!(d.removed.len(), 1);
@@ -429,24 +514,67 @@ mod tests {
     fn same_mac_on_new_ip_is_an_ip_change() {
         let old = vec![host("10.0.0.5", Some("aa:00:00:00:00:05"), &[])];
         let new = vec![host("10.0.0.9", Some("aa:00:00:00:00:05"), &[])];
-        let d = diff_hosts(old, new);
+        let d = diff_hosts(old, vec![], new);
         assert!(d.added.is_empty() && d.removed.is_empty());
         assert!(d.changed[0].ip_changed);
     }
 
     #[test]
-    fn different_mac_on_same_ip_is_a_different_device() {
+    fn different_mac_on_same_ip_is_a_replacement() {
         let old = vec![host("10.0.0.5", Some("aa:00:00:00:00:05"), &[])];
         let new = vec![host("10.0.0.5", Some("bb:00:00:00:00:05"), &[])];
-        let d = diff_hosts(old, new);
-        assert_eq!((d.added.len(), d.removed.len(), d.changed.len()), (1, 1, 0));
+        let d = diff_hosts(old, vec![], new);
+        assert_eq!((d.added.len(), d.removed.len(), d.changed.len()), (0, 0, 0));
+        assert_eq!(d.replaced.len(), 1);
+        assert_eq!(
+            d.replaced[0].before.mac.as_deref(),
+            Some("aa:00:00:00:00:05")
+        );
+        assert_eq!(
+            d.replaced[0].after.mac.as_deref(),
+            Some("bb:00:00:00:00:05")
+        );
+    }
+
+    #[test]
+    fn moved_device_frees_its_old_ip_for_another() {
+        // A moved to .9; B took A's old .5: one IP change, one new device.
+        let old = vec![host("10.0.0.5", Some("aa:00:00:00:00:0a"), &[])];
+        let new = vec![
+            host("10.0.0.9", Some("aa:00:00:00:00:0a"), &[]),
+            host("10.0.0.5", Some("bb:00:00:00:00:0b"), &[]),
+        ];
+        let d = diff_hosts(old, vec![], new);
+        assert!(d.replaced.is_empty() && d.removed.is_empty());
+        assert_eq!(d.added.len(), 1);
+        assert!(d.changed[0].ip_changed);
+    }
+
+    #[test]
+    fn offline_devices_stay_offline_or_come_back() {
+        let up = vec![host("10.0.0.1", Some("aa:00:00:00:00:01"), &[])];
+        let off = vec![
+            host("10.0.0.2", Some("aa:00:00:00:00:02"), &[]),
+            host("10.0.0.3", Some("aa:00:00:00:00:03"), &[]),
+        ];
+        let new = vec![
+            host("10.0.0.1", Some("aa:00:00:00:00:01"), &[]),
+            host("10.0.0.3", Some("aa:00:00:00:00:03"), &[]),
+        ];
+        let d = diff_hosts(up, off, new);
+        assert!(d.added.is_empty() && d.removed.is_empty());
+        assert_eq!(d.still_offline.len(), 1);
+        assert_eq!(d.still_offline[0].ip, "10.0.0.2");
+        assert_eq!(d.changed.len(), 1);
+        assert!(d.changed[0].came_back);
+        assert_eq!(d.unchanged, 1);
     }
 
     #[test]
     fn missing_mac_now_is_not_a_change() {
         let old = vec![host("10.0.0.5", Some("aa:00:00:00:00:05"), &[])];
         let new = vec![host("10.0.0.5", None, &[])];
-        let d = diff_hosts(old, new);
+        let d = diff_hosts(old, vec![], new);
         assert_eq!(d.unchanged, 1);
     }
 
@@ -461,6 +589,7 @@ mod tests {
                 "10.0.0.0/24".into(),
                 ScanProfile::Standard,
                 vec![host("10.0.0.1", Some("aa:00:00:00:00:01"), &[80])],
+                vec![],
             )
             .unwrap();
         assert_eq!(saved.name, "Casa");
@@ -476,6 +605,21 @@ mod tests {
             .rename(saved.id.clone(), "Ufficio".into())
             .unwrap();
         assert_eq!(store.clone().list().unwrap()[0].name, "Ufficio");
+
+        let updated = store
+            .clone()
+            .update(
+                saved.id.clone(),
+                "10.0.0.0/24".into(),
+                ScanProfile::Deep,
+                vec![],
+                vec![host("10.0.0.1", Some("aa:00:00:00:00:01"), &[80])],
+            )
+            .unwrap();
+        assert_eq!(updated.name, "Ufficio");
+        assert_eq!((updated.host_count, updated.offline_count), (0, 1));
+        assert!(updated.updated_at.is_some());
+        assert_eq!(updated.created_at, saved.created_at);
 
         assert!(store.clone().load("../x".into()).is_err());
         store.clone().delete(saved.id).unwrap();

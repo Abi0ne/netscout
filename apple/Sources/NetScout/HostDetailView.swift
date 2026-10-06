@@ -5,12 +5,15 @@ import SwiftUI
 struct HostDetailView: View {
     @Environment(ScanModel.self) private var model
     let host: Host
+    /// Known from a profile but not found by this scan.
+    var offline = false
     @ViewState private var connecting: ConnectRequest?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
+                if offline { wakeSection }
                 infoGrid
                 portsSection
             }
@@ -28,10 +31,12 @@ struct HostDetailView: View {
                     if model.deepScanning.contains(host.ip) {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Scansione approfondita", systemImage: "scope")
+                        Label(offline ? "Riscansiona" : "Scansione approfondita", systemImage: "scope")
                     }
                 }
-                .help("Riscansiona questo dispositivo con il profilo approfondito")
+                .help(offline
+                    ? "Riscansiona questo indirizzo per vedere se il dispositivo si è acceso"
+                    : "Riscansiona questo dispositivo con il profilo approfondito")
                 .disabled(model.deepScanning.contains(host.ip))
             }
         }
@@ -51,6 +56,22 @@ struct HostDetailView: View {
                 Text([host.deviceType.label, host.vendor].compactMap { $0 }.joined(separator: " · "))
                     .foregroundStyle(.secondary)
             }
+            if offline {
+                Label("Spento", systemImage: "power")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.orange.opacity(0.12), in: Capsule())
+            }
+        }
+    }
+
+    private var wakeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Non trovato in questa scansione: è spento o non è più in rete.")
+                .foregroundStyle(.secondary)
+            WakeButton(host: host)
         }
     }
 
@@ -60,9 +81,14 @@ struct HostDetailView: View {
             row("MAC", host.mac ?? "—", monospaced: true)
             row("Produttore", host.vendor ?? macNote)
             row("Nomi", host.hostnames.isEmpty ? "—" : host.hostnames.joined(separator: "\n"))
-            row("Latenza", host.rttMs.map { String(format: "%.2f ms", $0) } ?? "Non risponde al ping")
-            row("Visto alle", Date(timeIntervalSince1970: Double(host.lastSeen) / 1000)
-                .formatted(date: .omitted, time: .standard))
+            if offline {
+                row("Visto l'ultima volta", Date(timeIntervalSince1970: Double(host.lastSeen) / 1000)
+                    .formatted(date: .abbreviated, time: .shortened))
+            } else {
+                row("Latenza", host.rttMs.map { String(format: "%.2f ms", $0) } ?? "Non risponde al ping")
+                row("Visto alle", Date(timeIntervalSince1970: Double(host.lastSeen) / 1000)
+                    .formatted(date: .omitted, time: .standard))
+            }
         }
     }
 
@@ -75,7 +101,7 @@ struct HostDetailView: View {
     @ViewBuilder
     private var portsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Porte aperte").font(.headline)
+            Text(offline ? "Porte aperte (all'ultimo rilevamento)" : "Porte aperte").font(.headline)
             if host.openPorts.isEmpty {
                 Text("Nessuna tra quelle verificate.").foregroundStyle(.secondary)
             } else {
@@ -90,7 +116,7 @@ struct HostDetailView: View {
                             Button("Apri") { NSWorkspace.shared.open(url) }
                                 .buttonStyle(.link)
                         }
-                        if let kind = RemoteProtocol(port: port) {
+                        if !offline, let kind = RemoteProtocol(port: port) {
                             Button("Connetti…") {
                                 connecting = ConnectRequest(kind: kind, host: host.ip, port: port.number)
                             }

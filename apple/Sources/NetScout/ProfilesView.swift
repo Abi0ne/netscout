@@ -79,7 +79,7 @@ private struct ProfileRow: View {
             Text(profile.createdAtDate.formatted(date: .abbreviated, time: .shortened))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("\(profile.target) · \(profile.hostCount) dispositivi")
+            Text("\(profile.target) · \(profile.hostCount) dispositivi\(profile.offlineCount > 0 ? " · \(profile.offlineCount) spenti" : "")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -98,12 +98,12 @@ private struct ProfileDetailView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(summary.name).font(.title2.weight(.semibold))
-                Text("\(summary.target) · profilo \(summary.scanProfile.label.lowercased()) · \(summary.hostCount) dispositivi · salvato \(summary.createdAtDate.formatted(date: .abbreviated, time: .shortened))")
+                Text("\(summary.target) · profilo \(summary.scanProfile.label.lowercased()) · \(summary.hostCount) dispositivi · salvato \(summary.createdAtDate.formatted(date: .abbreviated, time: .shortened))\(summary.updatedAtDate.map { ", aggiornato \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")")
                     .foregroundStyle(.secondary)
             }
             .padding(16)
             Divider()
-            HostTableView(hosts: profile?.hosts ?? [], selection: $selection)
+            HostTableView(hosts: profile?.hosts ?? [], offline: profile?.offlineHosts ?? [], selection: $selection)
         }
         .toolbar {
             ToolbarItem {
@@ -124,4 +124,5 @@ private struct ProfileDetailView: View {
 
 extension ProfileSummary {
     var createdAtDate: Date { Date(timeIntervalSince1970: Double(createdAt) / 1000) }
+    var updatedAtDate: Date? { updatedAt.map { Date(timeIntervalSince1970: Double($0) / 1000) } }
 }

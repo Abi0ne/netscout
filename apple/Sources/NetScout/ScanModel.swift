@@ -16,6 +16,9 @@ final class ScanModel {
     var errorMessage: String?
 
     private(set) var hosts: [String: Host] = [:]
+    /// Devices known from a saved profile but not found by this scan, keyed
+    /// by `offlineID`. They are shown greyed out and can be woken (WoL).
+    private(set) var offlineHosts: [String: Host] = [:]
     private(set) var progress: NetScoutCore.Progress?
     private(set) var summary: Summary?
     private(set) var isScanning = false
@@ -82,6 +85,7 @@ final class ScanModel {
         let gen = generation
         pendingHosts = [:]
         hosts = [:]
+        offlineHosts = [:]
         progress = nil
         summary = nil
         errorMessage = nil
@@ -126,7 +130,9 @@ final class ScanModel {
         let observer = ObserverBridge { [weak self] event in
             guard let self, gen == self.generation else { return }
             switch event {
-            case .host(let host): self.hosts[host.ip] = host
+            case .host(let host):
+                self.hosts[host.ip] = host
+                self.dropOffline(matching: [host])
             case .finished: self.deepScanning.remove(ip)
             case .error(let message): self.errorMessage = message
             case .progress: break
@@ -209,7 +215,8 @@ extension ScanModel {
         guard let profileStore, hasFinishedScan else { return nil }
         do {
             let saved = try profileStore.save(
-                name: name, target: scannedTarget, scanProfile: scannedProfile, hosts: sortedHosts
+                name: name, target: scannedTarget, scanProfile: scannedProfile,
+                hosts: sortedHosts, offlineHosts: sortedOfflineHosts
             )
             refreshProfiles()
             return saved
@@ -253,10 +260,78 @@ extension ScanModel {
               let summary = profiles.first(where: { $0.id == id }) else { return }
         comparison = ProfileComparison(
             profile: summary,
-            diff: diffHosts(baseline: saved.hosts, current: sortedHosts),
+            diff: diffHosts(baseline: saved.hosts, baselineOffline: saved.offlineHosts, current: sortedHosts),
             targetDiffers: saved.target != scannedTarget,
             depthDiffers: saved.scanProfile != scannedProfile
         )
+    }
+}
+
+// MARK: - Devices that are off
+
+extension ScanModel {
+    /// Stable id of a device that is off (it has no live IP of its own).
+    nonisolated static func offlineID(_ host: Host) -> String {
+        "off-" + (host.mac?.lowercased() ?? host.ip)
+    }
+
+    var sortedOfflineHosts: [Host] {
+        offlineHosts.values.sorted { ipValue($0.ip) < ipValue($1.ip) }
+    }
+
+    /// Add devices that are off to this scan (skipping any found up).
+    func addOffline(_ devices: [Host]) {
+        let upMACs = Set(hosts.values.compactMap { $0.mac?.lowercased() })
+        for device in devices {
+            if let mac = device.mac?.lowercased() {
+                if upMACs.contains(mac) { continue }
+            } else if hosts[device.ip] != nil {
+                continue
+            }
+            offlineHosts[Self.offlineID(device)] = device
+        }
+    }
+
+    func forgetOffline(id: String) {
+        offlineHosts[id] = nil
+    }
+
+    /// A device that turns up is no longer off.
+    fileprivate func dropOffline(matching found: [Host]) {
+        guard !offlineHosts.isEmpty else { return }
+        for host in found {
+            if let mac = host.mac?.lowercased() {
+                offlineHosts["off-" + mac] = nil
+            }
+        }
+    }
+
+    /// Replace profile `id` with this scan: the devices up and those off.
+    @discardableResult
+    func updateProfile(id: String) -> Bool {
+        guard let profileStore, hasFinishedScan else { return false }
+        do {
+            try profileStore.update(
+                id: id, target: scannedTarget, scanProfile: scannedProfile,
+                hosts: sortedHosts, offlineHosts: sortedOfflineHosts
+            )
+            refreshProfiles()
+            return true
+        } catch {
+            errorMessage = "Aggiornamento del profilo non riuscito: \(error)"
+            return false
+        }
+    }
+
+    /// Send a Wake-on-LAN packet to `host`; returns an error message on failure.
+    func wake(_ host: Host) -> String? {
+        guard let scanner, let mac = host.mac else { return "MAC sconosciuto: impossibile inviare Wake-on-LAN." }
+        do {
+            try scanner.wakeOnLan(mac: mac, ip: host.ip)
+            return nil
+        } catch {
+            return "Wake-on-LAN non inviato: \(error)"
+        }
     }
 }
 
@@ -278,6 +353,7 @@ extension ScanModel {
         flushScheduled = false
         guard !pendingHosts.isEmpty else { return }
         hosts.merge(pendingHosts) { _, new in new }
+        dropOffline(matching: Array(pendingHosts.values))
         pendingHosts = [:]
     }
 }

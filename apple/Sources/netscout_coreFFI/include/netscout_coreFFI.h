@@ -322,7 +322,12 @@ void uniffi_netscout_core_fn_method_profilestore_rename(void*_Nonnull ptr, RustB
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_SAVE
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_SAVE
-RustBuffer uniffi_netscout_core_fn_method_profilestore_save(void*_Nonnull ptr, RustBuffer name, RustBuffer target, RustBuffer scan_profile, RustBuffer hosts, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_netscout_core_fn_method_profilestore_save(void*_Nonnull ptr, RustBuffer name, RustBuffer target, RustBuffer scan_profile, RustBuffer hosts, RustBuffer offline_hosts, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_UPDATE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_UPDATE
+RustBuffer uniffi_netscout_core_fn_method_profilestore_update(void*_Nonnull ptr, RustBuffer id, RustBuffer target, RustBuffer scan_profile, RustBuffer hosts, RustBuffer offline_hosts, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_CLONE_SCANNER
@@ -360,6 +365,11 @@ void uniffi_netscout_core_fn_method_scanner_set_network_info(void*_Nonnull ptr, 
 void uniffi_netscout_core_fn_method_scanner_start_scan(void*_Nonnull ptr, RustBuffer config, uint64_t observer, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_SCANNER_WAKE_ON_LAN
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_SCANNER_WAKE_ON_LAN
+void uniffi_netscout_core_fn_method_scanner_wake_on_lan(void*_Nonnull ptr, RustBuffer mac, RustBuffer ip, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_INIT_CALLBACK_VTABLE_SCANOBSERVER
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_INIT_CALLBACK_VTABLE_SCANOBSERVER
 void uniffi_netscout_core_fn_init_callback_vtable_scanobserver(UniffiVTableCallbackInterfaceScanObserver* _Nonnull vtable
@@ -367,7 +377,7 @@ void uniffi_netscout_core_fn_init_callback_vtable_scanobserver(UniffiVTableCallb
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_DIFF_HOSTS
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_DIFF_HOSTS
-RustBuffer uniffi_netscout_core_fn_func_diff_hosts(RustBuffer baseline, RustBuffer current, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_netscout_core_fn_func_diff_hosts(RustBuffer baseline, RustBuffer baseline_offline, RustBuffer current, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_NEW_SCANNER
@@ -709,6 +719,12 @@ uint16_t uniffi_netscout_core_checksum_method_profilestore_save(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_UPDATE
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_UPDATE
+uint16_t uniffi_netscout_core_checksum_method_profilestore_update(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_CANCEL
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_CANCEL
 uint16_t uniffi_netscout_core_checksum_method_scanner_cancel(void
@@ -736,6 +752,12 @@ uint16_t uniffi_netscout_core_checksum_method_scanner_set_network_info(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_START_SCAN
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_START_SCAN
 uint16_t uniffi_netscout_core_checksum_method_scanner_start_scan(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_WAKE_ON_LAN
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_WAKE_ON_LAN
+uint16_t uniffi_netscout_core_checksum_method_scanner_wake_on_lan(void
     
 );
 #endif

@@ -561,9 +561,16 @@ public protocol ProfileStoreProtocol : AnyObject {
     func rename(id: String, name: String) throws 
     
     /**
-     * Save `hosts` as a new profile called `name`.
+     * Save a scan as a new profile called `name`: the `hosts` found up and
+     * the `offline_hosts` known to be off.
      */
-    func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host]) throws  -> ProfileSummary
+    func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host], offlineHosts: [Host]) throws  -> ProfileSummary
+    
+    /**
+     * Replace the devices of profile `id` with a newer scan, keeping its
+     * name and creation date.
+     */
+    func update(id: String, target: String, scanProfile: ScanProfile, hosts: [Host], offlineHosts: [Host]) throws  -> ProfileSummary
     
 }
 
@@ -654,15 +661,33 @@ open func rename(id: String, name: String)throws  {try rustCallWithError(FfiConv
 }
     
     /**
-     * Save `hosts` as a new profile called `name`.
+     * Save a scan as a new profile called `name`: the `hosts` found up and
+     * the `offline_hosts` known to be off.
      */
-open func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host])throws  -> ProfileSummary {
+open func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host], offlineHosts: [Host])throws  -> ProfileSummary {
     return try  FfiConverterTypeProfileSummary.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
     uniffi_netscout_core_fn_method_profilestore_save(self.uniffiClonePointer(),
         FfiConverterString.lower(name),
         FfiConverterString.lower(target),
         FfiConverterTypeScanProfile.lower(scanProfile),
-        FfiConverterSequenceTypeHost.lower(hosts),$0
+        FfiConverterSequenceTypeHost.lower(hosts),
+        FfiConverterSequenceTypeHost.lower(offlineHosts),$0
+    )
+})
+}
+    
+    /**
+     * Replace the devices of profile `id` with a newer scan, keeping its
+     * name and creation date.
+     */
+open func update(id: String, target: String, scanProfile: ScanProfile, hosts: [Host], offlineHosts: [Host])throws  -> ProfileSummary {
+    return try  FfiConverterTypeProfileSummary.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_update(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(target),
+        FfiConverterTypeScanProfile.lower(scanProfile),
+        FfiConverterSequenceTypeHost.lower(hosts),
+        FfiConverterSequenceTypeHost.lower(offlineHosts),$0
     )
 })
 }
@@ -768,6 +793,13 @@ public protocol ScannerProtocol : AnyObject {
      * ports at a time. `timeout_ms = 0` selects the profile's default.
      */
     func startScan(config: ScanConfig, observer: ScanObserver) throws 
+    
+    /**
+     * Wake the device with MAC `mac` (Wake-on-LAN). `ip`, where the device
+     * was last seen, picks the network to broadcast on; without it every
+     * local network gets the packet. Blocking but instant (a few UDP sends).
+     */
+    func wakeOnLan(mac: String, ip: String?) throws 
     
 }
 
@@ -886,6 +918,19 @@ open func startScan(config: ScanConfig, observer: ScanObserver)throws  {try rust
     uniffi_netscout_core_fn_method_scanner_start_scan(self.uniffiClonePointer(),
         FfiConverterTypeScanConfig.lower(config),
         FfiConverterCallbackInterfaceScanObserver.lower(observer),$0
+    )
+}
+}
+    
+    /**
+     * Wake the device with MAC `mac` (Wake-on-LAN). `ip`, where the device
+     * was last seen, picks the network to broadcast on; without it every
+     * local network gets the packet. Blocking but instant (a few UDP sends).
+     */
+open func wakeOnLan(mac: String, ip: String?)throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_scanner_wake_on_lan(self.uniffiClonePointer(),
+        FfiConverterString.lower(mac),
+        FfiConverterOptionString.lower(ip),$0
     )
 }
 }
@@ -1205,6 +1250,10 @@ public struct HostChange {
      * The device as found now.
      */
     public var after: Host
+    /**
+     * The profile had it as off; it is up again.
+     */
+    public var cameBack: Bool
     public var ipChanged: Bool
     public var macChanged: Bool
     public var vendorChanged: Bool
@@ -1228,7 +1277,10 @@ public struct HostChange {
          */before: Host, 
         /**
          * The device as found now.
-         */after: Host, ipChanged: Bool, macChanged: Bool, vendorChanged: Bool, deviceTypeChanged: Bool, 
+         */after: Host, 
+        /**
+         * The profile had it as off; it is up again.
+         */cameBack: Bool, ipChanged: Bool, macChanged: Bool, vendorChanged: Bool, deviceTypeChanged: Bool, 
         /**
          * Open now, not in the profile.
          */openedPorts: [UInt16], 
@@ -1237,6 +1289,7 @@ public struct HostChange {
          */closedPorts: [UInt16], addedHostnames: [String], removedHostnames: [String]) {
         self.before = before
         self.after = after
+        self.cameBack = cameBack
         self.ipChanged = ipChanged
         self.macChanged = macChanged
         self.vendorChanged = vendorChanged
@@ -1256,6 +1309,9 @@ extension HostChange: Equatable, Hashable {
             return false
         }
         if lhs.after != rhs.after {
+            return false
+        }
+        if lhs.cameBack != rhs.cameBack {
             return false
         }
         if lhs.ipChanged != rhs.ipChanged {
@@ -1288,6 +1344,7 @@ extension HostChange: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(before)
         hasher.combine(after)
+        hasher.combine(cameBack)
         hasher.combine(ipChanged)
         hasher.combine(macChanged)
         hasher.combine(vendorChanged)
@@ -1309,6 +1366,7 @@ public struct FfiConverterTypeHostChange: FfiConverterRustBuffer {
             try HostChange(
                 before: FfiConverterTypeHost.read(from: &buf), 
                 after: FfiConverterTypeHost.read(from: &buf), 
+                cameBack: FfiConverterBool.read(from: &buf), 
                 ipChanged: FfiConverterBool.read(from: &buf), 
                 macChanged: FfiConverterBool.read(from: &buf), 
                 vendorChanged: FfiConverterBool.read(from: &buf), 
@@ -1323,6 +1381,7 @@ public struct FfiConverterTypeHostChange: FfiConverterRustBuffer {
     public static func write(_ value: HostChange, into buf: inout [UInt8]) {
         FfiConverterTypeHost.write(value.before, into: &buf)
         FfiConverterTypeHost.write(value.after, into: &buf)
+        FfiConverterBool.write(value.cameBack, into: &buf)
         FfiConverterBool.write(value.ipChanged, into: &buf)
         FfiConverterBool.write(value.macChanged, into: &buf)
         FfiConverterBool.write(value.vendorChanged, into: &buf)
@@ -1588,16 +1647,20 @@ public struct ProfileSummary {
     public var target: String
     public var scanProfile: ScanProfile
     public var hostCount: UInt32
+    public var offlineCount: UInt32
+    public var updatedAt: Int64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String, name: String, createdAt: Int64, target: String, scanProfile: ScanProfile, hostCount: UInt32) {
+    public init(id: String, name: String, createdAt: Int64, target: String, scanProfile: ScanProfile, hostCount: UInt32, offlineCount: UInt32, updatedAt: Int64?) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
         self.target = target
         self.scanProfile = scanProfile
         self.hostCount = hostCount
+        self.offlineCount = offlineCount
+        self.updatedAt = updatedAt
     }
 }
 
@@ -1623,6 +1686,12 @@ extension ProfileSummary: Equatable, Hashable {
         if lhs.hostCount != rhs.hostCount {
             return false
         }
+        if lhs.offlineCount != rhs.offlineCount {
+            return false
+        }
+        if lhs.updatedAt != rhs.updatedAt {
+            return false
+        }
         return true
     }
 
@@ -1633,6 +1702,8 @@ extension ProfileSummary: Equatable, Hashable {
         hasher.combine(target)
         hasher.combine(scanProfile)
         hasher.combine(hostCount)
+        hasher.combine(offlineCount)
+        hasher.combine(updatedAt)
     }
 }
 
@@ -1649,7 +1720,9 @@ public struct FfiConverterTypeProfileSummary: FfiConverterRustBuffer {
                 createdAt: FfiConverterInt64.read(from: &buf), 
                 target: FfiConverterString.read(from: &buf), 
                 scanProfile: FfiConverterTypeScanProfile.read(from: &buf), 
-                hostCount: FfiConverterUInt32.read(from: &buf)
+                hostCount: FfiConverterUInt32.read(from: &buf), 
+                offlineCount: FfiConverterUInt32.read(from: &buf), 
+                updatedAt: FfiConverterOptionInt64.read(from: &buf)
         )
     }
 
@@ -1660,6 +1733,8 @@ public struct FfiConverterTypeProfileSummary: FfiConverterRustBuffer {
         FfiConverterString.write(value.target, into: &buf)
         FfiConverterTypeScanProfile.write(value.scanProfile, into: &buf)
         FfiConverterUInt32.write(value.hostCount, into: &buf)
+        FfiConverterUInt32.write(value.offlineCount, into: &buf)
+        FfiConverterOptionInt64.write(value.updatedAt, into: &buf)
     }
 }
 
@@ -1799,7 +1874,18 @@ public struct SavedProfile {
      * ports that were simply not probed as closed.
      */
     public var scanProfile: ScanProfile
+    /**
+     * Devices up when the profile was saved.
+     */
     public var hosts: [Host]
+    /**
+     * Devices known from earlier scans but off when the profile was saved.
+     */
+    public var offlineHosts: [Host]
+    /**
+     * Epoch ms of the last [`ProfileStore::update`], if any.
+     */
+    public var updatedAt: Int64?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1813,13 +1899,24 @@ public struct SavedProfile {
         /**
          * The scan depth used; comparing scans of different depths reports
          * ports that were simply not probed as closed.
-         */scanProfile: ScanProfile, hosts: [Host]) {
+         */scanProfile: ScanProfile, 
+        /**
+         * Devices up when the profile was saved.
+         */hosts: [Host], 
+        /**
+         * Devices known from earlier scans but off when the profile was saved.
+         */offlineHosts: [Host], 
+        /**
+         * Epoch ms of the last [`ProfileStore::update`], if any.
+         */updatedAt: Int64?) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
         self.target = target
         self.scanProfile = scanProfile
         self.hosts = hosts
+        self.offlineHosts = offlineHosts
+        self.updatedAt = updatedAt
     }
 }
 
@@ -1845,6 +1942,12 @@ extension SavedProfile: Equatable, Hashable {
         if lhs.hosts != rhs.hosts {
             return false
         }
+        if lhs.offlineHosts != rhs.offlineHosts {
+            return false
+        }
+        if lhs.updatedAt != rhs.updatedAt {
+            return false
+        }
         return true
     }
 
@@ -1855,6 +1958,8 @@ extension SavedProfile: Equatable, Hashable {
         hasher.combine(target)
         hasher.combine(scanProfile)
         hasher.combine(hosts)
+        hasher.combine(offlineHosts)
+        hasher.combine(updatedAt)
     }
 }
 
@@ -1871,7 +1976,9 @@ public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
                 createdAt: FfiConverterInt64.read(from: &buf), 
                 target: FfiConverterString.read(from: &buf), 
                 scanProfile: FfiConverterTypeScanProfile.read(from: &buf), 
-                hosts: FfiConverterSequenceTypeHost.read(from: &buf)
+                hosts: FfiConverterSequenceTypeHost.read(from: &buf), 
+                offlineHosts: FfiConverterSequenceTypeHost.read(from: &buf), 
+                updatedAt: FfiConverterOptionInt64.read(from: &buf)
         )
     }
 
@@ -1882,6 +1989,8 @@ public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
         FfiConverterString.write(value.target, into: &buf)
         FfiConverterTypeScanProfile.write(value.scanProfile, into: &buf)
         FfiConverterSequenceTypeHost.write(value.hosts, into: &buf)
+        FfiConverterSequenceTypeHost.write(value.offlineHosts, into: &buf)
+        FfiConverterOptionInt64.write(value.updatedAt, into: &buf)
     }
 }
 
@@ -2029,13 +2138,23 @@ public struct ScanDiff {
      */
     public var added: [Host]
     /**
-     * In the profile only.
+     * Up in the profile, not found now: off, or gone.
      */
     public var removed: [Host]
     /**
-     * In both, with differences.
+     * Off in the profile and still not found.
+     */
+    public var stillOffline: [Host]
+    /**
+     * Found in both. Includes devices back up (`came_back`) and devices
+     * that moved to another IP (`ip_changed`, matched by MAC).
      */
     public var changed: [HostChange]
+    /**
+     * The profile's device at an IP (`before`) and a different device, by
+     * MAC, at that IP now (`after`). The old device is not found elsewhere.
+     */
+    public var replaced: [HostChange]
     /**
      * In both, identical.
      */
@@ -2048,17 +2167,27 @@ public struct ScanDiff {
          * In the new scan only.
          */added: [Host], 
         /**
-         * In the profile only.
+         * Up in the profile, not found now: off, or gone.
          */removed: [Host], 
         /**
-         * In both, with differences.
+         * Off in the profile and still not found.
+         */stillOffline: [Host], 
+        /**
+         * Found in both. Includes devices back up (`came_back`) and devices
+         * that moved to another IP (`ip_changed`, matched by MAC).
          */changed: [HostChange], 
+        /**
+         * The profile's device at an IP (`before`) and a different device, by
+         * MAC, at that IP now (`after`). The old device is not found elsewhere.
+         */replaced: [HostChange], 
         /**
          * In both, identical.
          */unchanged: UInt32) {
         self.added = added
         self.removed = removed
+        self.stillOffline = stillOffline
         self.changed = changed
+        self.replaced = replaced
         self.unchanged = unchanged
     }
 }
@@ -2073,7 +2202,13 @@ extension ScanDiff: Equatable, Hashable {
         if lhs.removed != rhs.removed {
             return false
         }
+        if lhs.stillOffline != rhs.stillOffline {
+            return false
+        }
         if lhs.changed != rhs.changed {
+            return false
+        }
+        if lhs.replaced != rhs.replaced {
             return false
         }
         if lhs.unchanged != rhs.unchanged {
@@ -2085,7 +2220,9 @@ extension ScanDiff: Equatable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(added)
         hasher.combine(removed)
+        hasher.combine(stillOffline)
         hasher.combine(changed)
+        hasher.combine(replaced)
         hasher.combine(unchanged)
     }
 }
@@ -2100,7 +2237,9 @@ public struct FfiConverterTypeScanDiff: FfiConverterRustBuffer {
             try ScanDiff(
                 added: FfiConverterSequenceTypeHost.read(from: &buf), 
                 removed: FfiConverterSequenceTypeHost.read(from: &buf), 
+                stillOffline: FfiConverterSequenceTypeHost.read(from: &buf), 
                 changed: FfiConverterSequenceTypeHostChange.read(from: &buf), 
+                replaced: FfiConverterSequenceTypeHostChange.read(from: &buf), 
                 unchanged: FfiConverterUInt32.read(from: &buf)
         )
     }
@@ -2108,7 +2247,9 @@ public struct FfiConverterTypeScanDiff: FfiConverterRustBuffer {
     public static func write(_ value: ScanDiff, into buf: inout [UInt8]) {
         FfiConverterSequenceTypeHost.write(value.added, into: &buf)
         FfiConverterSequenceTypeHost.write(value.removed, into: &buf)
+        FfiConverterSequenceTypeHost.write(value.stillOffline, into: &buf)
         FfiConverterSequenceTypeHostChange.write(value.changed, into: &buf)
+        FfiConverterSequenceTypeHostChange.write(value.replaced, into: &buf)
         FfiConverterUInt32.write(value.unchanged, into: &buf)
     }
 }
@@ -3288,6 +3429,30 @@ extension FfiConverterCallbackInterfaceScanObserver : FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+    typealias SwiftType = Int64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionDouble: FfiConverterRustBuffer {
     typealias SwiftType = Double?
 
@@ -3582,17 +3747,19 @@ fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
     }
 }
 /**
- * Compare a profile's hosts (`baseline`) with a new scan (`current`).
+ * Compare a profile (`baseline` up, `baseline_offline` off) with a new scan
+ * (`current`).
  *
  * Devices are matched by MAC first, so a device that got a new DHCP lease is
  * reported as "IP changed" rather than as one removed and one added device.
- * Hosts left over are matched by IP, unless both sides have a MAC and the
- * MACs differ: that is a different device on a reused address.
+ * Hosts left over are matched by IP; when both sides have a MAC and the
+ * MACs differ, a different device now uses the address (`replaced`).
  */
-public func diffHosts(baseline: [Host], current: [Host]) -> ScanDiff {
+public func diffHosts(baseline: [Host], baselineOffline: [Host], current: [Host]) -> ScanDiff {
     return try!  FfiConverterTypeScanDiff.lift(try! rustCall() {
     uniffi_netscout_core_fn_func_diff_hosts(
         FfiConverterSequenceTypeHost.lower(baseline),
+        FfiConverterSequenceTypeHost.lower(baselineOffline),
         FfiConverterSequenceTypeHost.lower(current),$0
     )
 })
@@ -3634,7 +3801,7 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_netscout_core_checksum_func_diff_hosts() != 18241) {
+    if (uniffi_netscout_core_checksum_func_diff_hosts() != 45751) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_func_new_scanner() != 9395) {
@@ -3655,7 +3822,10 @@ private var initializationResult: InitializationResult = {
     if (uniffi_netscout_core_checksum_method_profilestore_rename() != 32892) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_netscout_core_checksum_method_profilestore_save() != 51411) {
+    if (uniffi_netscout_core_checksum_method_profilestore_save() != 31247) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_update() != 58073) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanner_cancel() != 9320) {
@@ -3671,6 +3841,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanner_start_scan() != 8768) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_scanner_wake_on_lan() != 41597) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanobserver_on_host() != 8110) {
