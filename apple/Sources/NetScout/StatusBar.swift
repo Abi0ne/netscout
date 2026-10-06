@@ -4,6 +4,7 @@ import SwiftUI
 /// one, the update on offer.
 struct StatusBar: View {
     @Environment(Updater.self) private var updater
+    @Environment(ScanModel.self) private var model
 
     var body: some View {
         HStack(spacing: 10) {
@@ -11,6 +12,13 @@ struct StatusBar: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+            if let notice = model.networkNotice {
+                Label(notice, systemImage: "network")
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+                    .lineLimit(1)
+                    .transition(.opacity)
+            }
             Spacer()
             updateStatus
         }
@@ -18,6 +26,7 @@ struct StatusBar: View {
         .frame(height: 26)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
+        .animation(.default, value: model.networkNotice)
     }
 
     @ViewBuilder

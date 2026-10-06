@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import NetScoutCore
 import Observation
 
@@ -37,7 +38,12 @@ final class ScanModel {
     fileprivate var pendingHosts: [String: Host] = [:]
     fileprivate var flushScheduled = false
 
+    /// Set for a few seconds after the networks change under a running app.
+    private(set) var networkNotice: String?
+
     private var scanner: Scanner?
+    private var pathMonitor: NWPathMonitor?
+    private var networkPoll: Timer?
     private var profileStore: ProfileStore?
     /// Bumped on every start/cancel so late events of an old scan are dropped.
     private var generation = 0
@@ -46,6 +52,7 @@ final class ScanModel {
         do {
             scanner = try newScanner()
             detectNetworks()
+            watchNetworks()
             // `NetScout --scan` starts scanning right away (handy for testing).
             if CommandLine.arguments.contains("--scan") {
                 startScan()
@@ -65,12 +72,65 @@ final class ScanModel {
         do {
             networks = try scanner.detectNetworks()
             debugLog("networks: \(networks.map { "\($0.interface) \($0.cidr) gw \($0.gateway ?? "-")" })")
-            if target.isEmpty,
-               let net = networks.first(where: { $0.gateway != nil }) ?? networks.first {
+            if target.isEmpty, let net = Self.preferredNetwork(networks) {
                 target = net.cidr
             }
         } catch {
             errorMessage = "Nessuna rete trovata: \(error)"
+        }
+    }
+
+    /// The network to scan by default: the one with a gateway, else the first.
+    private static func preferredNetwork(_ networks: [NetworkInfo]) -> NetworkInfo? {
+        networks.first(where: { $0.gateway != nil }) ?? networks.first
+    }
+
+    /// Follow interface and address changes while the app runs: macOS
+    /// reports path changes at once (re-read now and again shortly, as DHCP
+    /// may still be assigning the address), and a light poll catches the
+    /// changes it does not report, like a new lease on the same network.
+    private func watchNetworks() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.refreshNetworks() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                MainActor.assumeIsolated { self?.refreshNetworks() }
+            }
+        }
+        monitor.start(queue: .global(qos: .utility))
+        pathMonitor = monitor
+        networkPoll = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshNetworks() }
+        }
+    }
+
+    /// Re-read the networks; when they changed, update the list and, if the
+    /// target was a network that no longer exists (or none), move it to the
+    /// current one. A target the user typed is left alone.
+    func refreshNetworks() {
+        guard let scanner else { return }
+        let current = (try? scanner.detectNetworks()) ?? []
+        guard current != networks else { return }
+        let old = networks
+        networks = current
+        debugLog("networks changed: \(current.map { "\($0.interface) \($0.cidr)" })")
+
+        let targetWasDetected = old.contains { $0.cidr == target }
+        let targetGone = !current.contains { $0.cidr == target }
+        if target.isEmpty || (targetWasDetected && targetGone),
+           let net = Self.preferredNetwork(current) {
+            target = net.cidr
+        }
+        let summary = current.isEmpty
+            ? "nessuna rete attiva"
+            : current.map { "\($0.interface) \($0.ipv4)" }.joined(separator: ", ")
+        networkNotice = "Rete cambiata: \(summary)"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            MainActor.assumeIsolated {
+                if self?.networkNotice?.hasSuffix(summary) == true { self?.networkNotice = nil }
+            }
         }
     }
 
