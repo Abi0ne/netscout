@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "netscout-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "ipnet",
  "libc",
