@@ -69,3 +69,9 @@ without asking, once no scan is running. To publish a version:
 # bump version in Cargo.toml, commit, then:
 scripts/release.sh [notes.md]  # build, zip, tag v<version>, push, gh release
 ```
+
+Each release carries `NetScout.zip` (for the updater) and
+`NetScout-<version>.dmg` (for new installs, `scripts/make-dmg.sh`). The app
+has an ad-hoc signature, not a Developer ID one, so the first launch must be
+allowed in *Impostazioni di Sistema → Privacy e sicurezza → Apri comunque*;
+the `Leggimi.txt` in the disk image explains it.
