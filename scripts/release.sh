@@ -9,6 +9,9 @@
 #   1. bump `version` in Cargo.toml ([workspace.package]) and commit
 #   2. scripts/release.sh [notes.md]     # notes default to GitHub's generated ones
 #
+# NETSCOUT_SKIP_LINUX=1 publishes the macOS app only, without the Linux
+# package (when the Linux app is behind).
+#
 # Requires: a clean tree on main, gh logged in with push access, ssh access
 # to the Linux build host.
 set -euo pipefail
@@ -40,9 +43,12 @@ ditto -c -k --sequesterRsrc --keepParent apple/build/NetScout.app "$ZIP"
 DMG="dist/NetScout-$VERSION.dmg"
 # The Linux package, built before tagging so a failure publishes nothing.
 rm -f dist/netscout_*.deb
-"$HERE/remote-deb.sh" HEAD
-DEBS=(dist/netscout_"$VERSION"_*.deb)
-[ -f "${DEBS[0]}" ] || { echo "no Linux package for $VERSION" >&2; exit 1; }
+DEBS=()
+if [ "${NETSCOUT_SKIP_LINUX:-}" != 1 ]; then
+  "$HERE/remote-deb.sh" HEAD
+  DEBS=(dist/netscout_"$VERSION"_*.deb)
+  [ -f "${DEBS[0]}" ] || { echo "no Linux package for $VERSION" >&2; exit 1; }
+fi
 
 echo ">> tagging $TAG and pushing"
 git tag -a "$TAG" -m "NetScout $VERSION"
@@ -50,8 +56,8 @@ git push origin main "$TAG"
 
 echo ">> publishing the release"
 if [ -n "$NOTES" ]; then
-  gh release create "$TAG" "$ZIP" "$DMG" "${DEBS[@]}" --title "NetScout $VERSION" --notes-file "$NOTES"
+  gh release create "$TAG" "$ZIP" "$DMG" ${DEBS[@]+"${DEBS[@]}"} --title "NetScout $VERSION" --notes-file "$NOTES"
 else
-  gh release create "$TAG" "$ZIP" "$DMG" "${DEBS[@]}" --title "NetScout $VERSION" --generate-notes
+  gh release create "$TAG" "$ZIP" "$DMG" ${DEBS[@]+"${DEBS[@]}"} --title "NetScout $VERSION" --generate-notes
 fi
 echo ">> released NetScout $VERSION"
