@@ -19,6 +19,9 @@
 //!    window, and a longer one lets TCP retransmit the SYN. Only up hosts are
 //!    retried, so the sweep keeps its pace. Hosts that get a name or a port
 //!    are re-emitted.
+//!    With the deep profile, names that cross subnets come next, from the
+//!    ports now known (see `deep_names`): DNS asked directly, SMB, and TLS
+//!    certificates.
 //! 5. **Classify** — each host's device type from the evidence gathered
 //!    (see `classify`); hosts whose type is now known are re-emitted.
 //! 6. **Finish** — `on_finished` with the summary. A cancelled scan stops at
@@ -35,6 +38,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::classify;
+use crate::deep_names;
 use crate::error::ScanError;
 use crate::icmp::{self, PingClient};
 use crate::names;
@@ -85,6 +89,10 @@ pub struct ScanJob {
     pub concurrency: usize,
     pub per_host_concurrency: usize,
     pub timeout: Duration,
+    /// Deep profile: also the names that cross subnets.
+    pub deep: bool,
+    /// Name servers to ask directly (deep profile), set by the scanner.
+    pub name_servers: Vec<Ipv4Addr>,
 }
 
 /// Validate `config` and expand it into a [`ScanJob`].
@@ -127,6 +135,8 @@ pub fn plan(config: &ScanConfig) -> Result<ScanJob, ScanError> {
         concurrency: (config.concurrency as usize).min(MAX_CONCURRENCY),
         per_host_concurrency: (config.per_host_concurrency as usize).max(1),
         timeout: Duration::from_millis(timeout_ms),
+        deep: config.profile == ScanProfile::Deep,
+        name_servers: Vec::new(),
     })
 }
 
@@ -267,6 +277,12 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
     };
     if cancel.run_until_cancelled(second_look).await.is_none() {
         return;
+    }
+    if job.deep {
+        let names = deep_resolve_names(&ctx, &job.name_servers, Arc::clone(&sockets));
+        if cancel.run_until_cancelled(names).await.is_none() {
+            return;
+        }
     }
     classify_hosts(&ctx, &gateways);
 
@@ -444,6 +460,35 @@ async fn resolve_names(ctx: &Ctx) {
         let updated = ctx.lock_hosts().get_mut(&ip).map(|h| {
             h.hostnames = found;
             h.clone()
+        });
+        if let Some(h) = updated {
+            ctx.observer.on_host(h);
+        }
+    }
+    ctx.report(ScanPhase::Resolving, true);
+}
+
+/// The deep profile's names (see `deep_names`), added after the ones already
+/// found; hosts that got a new name are re-emitted.
+async fn deep_resolve_names(ctx: &Ctx, servers: &[Ipv4Addr], sockets: Arc<Semaphore>) {
+    let targets: Vec<deep_names::Target> = ctx
+        .lock_hosts()
+        .iter()
+        .map(|(&ip, h)| deep_names::Target {
+            ip,
+            open_ports: h.open_ports.iter().map(|p| p.number).collect(),
+        })
+        .collect();
+    let found = deep_names::resolve(&targets, servers, sockets).await;
+    for (ip, names) in found {
+        let updated = ctx.lock_hosts().get_mut(&ip).and_then(|h| {
+            let before = h.hostnames.len();
+            for name in names {
+                if !h.hostnames.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                    h.hostnames.push(name);
+                }
+            }
+            (h.hostnames.len() > before).then(|| h.clone())
         });
         if let Some(h) = updated {
             ctx.observer.on_host(h);

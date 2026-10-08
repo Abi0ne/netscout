@@ -49,7 +49,7 @@ struct HostDetailView: View {
             .disabled(running)
             Text(offline
                 ? "Cerca di nuovo questo indirizzo per vedere se il dispositivo si è acceso."
-                : "Riscansiona solo questo dispositivo con il profilo approfondito: più porte e più tempo per rispondere, per scoprire servizi sfuggiti alla scansione della rete.")
+                : "Riscansiona solo questo dispositivo con il profilo approfondito: più porte e più tempo per rispondere, per scoprire servizi sfuggiti alla scansione della rete, e i nomi che arrivano anche da un'altra VLAN (Windows, certificati, DNS).")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

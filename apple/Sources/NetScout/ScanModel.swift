@@ -196,6 +196,7 @@ final class ScanModel {
         let observer = ObserverBridge { [weak self] event in
             self?.apply(event, generation: gen)
         }
+        scanner.setNameServers(servers: NameServers.configured)
         do {
             try scanner.startScan(
                 config: ScanConfig(
@@ -239,6 +240,7 @@ final class ScanModel {
             case .progress: break
             }
         }
+        scanner.setNameServers(servers: NameServers.configured)
         do {
             try scanner.scanHost(ip: ip, observer: observer)
         } catch {

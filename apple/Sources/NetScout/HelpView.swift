@@ -110,7 +110,7 @@ struct HelpTopic: Identifiable {
             .bullets([
                 "**Rapida** — controlla solo 7 porte comuni (SSH, DNS, web, condivisione file) con attese brevi: ideale per vedere in pochi secondi chi è acceso.",
                 "**Standard** — 20 porte, tra cui FTP, Telnet, RDP, stampanti, telecamere (RTSP), AirPlay e MQTT. È il compromesso consigliato.",
-                "**Approfondita** — circa 40 porte, compresi posta, database, VNC, Plex e NAS, con attese più lunghe: più lenta ma più completa.",
+                "**Approfondita** — circa 40 porte, compresi posta, database, VNC, Plex e NAS, con attese più lunghe: più lenta ma più completa. Cerca anche i nomi che da un'altra VLAN non arriverebbero (vedi sotto, **Nome**).",
             ]),
             .heading("Durante la scansione"),
             .text("Premi **Avvia scansione** (o ⌘R). I dispositivi compaiono nella tabella man mano che rispondono; sotto il pulsante vedi la fase in corso (*Ricerca dispositivi*, *Nomi e produttori*, *Porte*), quanti dispositivi sono attivi, le porte aperte trovate e il tempo trascorso. **Ferma** interrompe la scansione tenendo quanto trovato."),
@@ -118,7 +118,7 @@ struct HelpTopic: Identifiable {
             .bullets([
                 "**Presenza** — ping e tentativi di connessione su porte comuni: basta una risposta, anche un rifiuto, per sapere che il dispositivo è acceso.",
                 "**Produttore** — dal MAC, con una tabella dei produttori inclusa nell'app. Se il MAC è *privato (casuale)*, come fanno telefoni e tablet, il produttore non si può sapere.",
-                "**Nome** — da DNS inverso, Bonjour/mDNS (Mac, iPhone, stampanti, altoparlanti) e NetBIOS (Windows e Samba).",
+                "**Nome** — da DNS inverso, Bonjour/mDNS (Mac, iPhone, stampanti, altoparlanti) e NetBIOS (Windows e Samba). mDNS e NetBIOS di solito non attraversano le VLAN: con il profilo **Approfondita** NetScout chiede il nome anche ai PC Windows (condivisione file, porta 445, e Desktop remoto, 3389), legge i certificati delle pagine web (443, 8443, 5001) e interroga direttamente i server DNS della rete scansionata e quelli indicati in **Impostazioni → Scansione** (ad esempio i domain controller).",
                 "**Tipo** — dedotto da produttore, nome, porte aperte e servizi annunciati (router, computer, stampante, telecamera, NAS, TV, console, IoT…).",
             ]),
             .heading("Cambi di rete"),

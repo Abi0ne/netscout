@@ -812,6 +812,15 @@ public protocol ScannerProtocol : AnyObject {
     func scanHost(ip: String, observer: ScanObserver) throws 
     
     /**
+     * Name servers the deep profile asks for the hosts' names, besides the
+     * system's: e.g. the domain controller of a segmented network, whose
+     * DNS knows the names of other VLANs. Entries that are not IPv4
+     * addresses are ignored; an empty list asks only the scanned hosts
+     * that serve DNS.
+     */
+    func setNameServers(servers: [String]) 
+    
+    /**
      * Inject network info from the platform. Android's engine has no raw
      * interface enumeration, so Kotlin calls this with the known Wi-Fi subnet
      * (and the app's own interface) before starting a scan.
@@ -924,6 +933,20 @@ open func scanHost(ip: String, observer: ScanObserver)throws  {try rustCallWithE
     uniffi_netscout_core_fn_method_scanner_scan_host(self.uniffiClonePointer(),
         FfiConverterString.lower(ip),
         FfiConverterCallbackInterfaceScanObserver.lower(observer),$0
+    )
+}
+}
+    
+    /**
+     * Name servers the deep profile asks for the hosts' names, besides the
+     * system's: e.g. the domain controller of a segmented network, whose
+     * DNS knows the names of other VLANs. Entries that are not IPv4
+     * addresses are ignored; an empty list asks only the scanned hosts
+     * that serve DNS.
+     */
+open func setNameServers(servers: [String]) {try! rustCall() {
+    uniffi_netscout_core_fn_method_scanner_set_name_servers(self.uniffiClonePointer(),
+        FfiConverterSequenceString.lower(servers),$0
     )
 }
 }
@@ -4239,6 +4262,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanner_scan_host() != 64599) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_scanner_set_name_servers() != 64630) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_scanner_set_network_info() != 19057) {

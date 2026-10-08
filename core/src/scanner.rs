@@ -46,6 +46,8 @@ pub struct Scanner {
     /// Network info injected by the platform (Android/Kotlin) when it cannot
     /// enumerate interfaces itself. `None` on platforms that can self-detect.
     injected_network: Mutex<Option<NetworkInfo>>,
+    /// Name servers the deep profile asks directly (see `set_name_servers`).
+    name_servers: Mutex<Vec<Ipv4Addr>>,
 }
 
 impl Scanner {
@@ -60,15 +62,21 @@ impl Scanner {
             runtime: Some(runtime),
             cancel: Mutex::new(CancellationToken::new()),
             injected_network: Mutex::new(None),
+            name_servers: Mutex::new(Vec::new()),
         })
     }
 
     /// Spawn `job` on the private runtime under a child of the cancel token.
     fn launch(
         &self,
-        job: engine::ScanJob,
+        mut job: engine::ScanJob,
         observer: Box<dyn ScanObserver>,
     ) -> Result<(), ScanError> {
+        job.name_servers = self
+            .name_servers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let token = self
             .cancel
             .lock()
@@ -130,6 +138,18 @@ impl Scanner {
             .injected_network
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(info);
+    }
+
+    /// Name servers the deep profile asks for the hosts' names, besides the
+    /// system's: e.g. the domain controller of a segmented network, whose
+    /// DNS knows the names of other VLANs. Entries that are not IPv4
+    /// addresses are ignored; an empty list asks only the scanned hosts
+    /// that serve DNS.
+    pub fn set_name_servers(self: Arc<Self>, servers: Vec<String>) {
+        *self.name_servers.lock().unwrap_or_else(|e| e.into_inner()) = servers
+            .iter()
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
     }
 
     /// Begin a **non-blocking** scan. Returns immediately; results stream

@@ -144,9 +144,19 @@ async fn query_all(
 /// A DNS query for `PTR d.c.b.a.in-addr.arpa`, class IN with the
 /// unicast-response bit set.
 fn build_mdns_query(ip: Ipv4Addr, id: u16) -> Vec<u8> {
+    ptr_query(ip, id, 0, 0x8001) // QU bit + class IN
+}
+
+/// The same question for a DNS server, with recursion desired when
+/// `recursive` (`deep_names` asks servers directly).
+pub(crate) fn dns_ptr_query(ip: Ipv4Addr, id: u16, recursive: bool) -> Vec<u8> {
+    ptr_query(ip, id, if recursive { 0x0100 } else { 0 }, 1)
+}
+
+fn ptr_query(ip: Ipv4Addr, id: u16, flags: u16, class: u16) -> Vec<u8> {
     let mut q = Vec::with_capacity(64);
     q.extend(id.to_be_bytes());
-    q.extend([0, 0]); // flags: standard query
+    q.extend(flags.to_be_bytes());
     q.extend([0, 1, 0, 0, 0, 0, 0, 0]); // 1 question
     let o = ip.octets();
     for label in [
@@ -162,8 +172,13 @@ fn build_mdns_query(ip: Ipv4Addr, id: u16) -> Vec<u8> {
     }
     q.push(0);
     q.extend(DNS_TYPE_PTR.to_be_bytes());
-    q.extend(0x8001u16.to_be_bytes()); // QU bit + class IN
+    q.extend(class.to_be_bytes());
     q
+}
+
+/// The target name of the first PTR answer in a DNS response.
+pub(crate) fn parse_ptr_answer(msg: &[u8]) -> Option<String> {
+    parse_mdns_ptr(msg)
 }
 
 /// The target name of the first PTR answer in a DNS response.

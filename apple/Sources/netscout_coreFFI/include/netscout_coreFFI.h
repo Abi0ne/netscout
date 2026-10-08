@@ -365,6 +365,11 @@ RustBuffer uniffi_netscout_core_fn_method_scanner_detect_networks(void*_Nonnull 
 void uniffi_netscout_core_fn_method_scanner_scan_host(void*_Nonnull ptr, RustBuffer ip, uint64_t observer, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_SCANNER_SET_NAME_SERVERS
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_SCANNER_SET_NAME_SERVERS
+void uniffi_netscout_core_fn_method_scanner_set_name_servers(void*_Nonnull ptr, RustBuffer servers, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_SCANNER_SET_NETWORK_INFO
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_SCANNER_SET_NETWORK_INFO
 void uniffi_netscout_core_fn_method_scanner_set_network_info(void*_Nonnull ptr, RustBuffer info, RustCallStatus *_Nonnull out_status
@@ -817,6 +822,12 @@ uint16_t uniffi_netscout_core_checksum_method_scanner_detect_networks(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_SCAN_HOST
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_SCAN_HOST
 uint16_t uniffi_netscout_core_checksum_method_scanner_scan_host(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_SET_NAME_SERVERS
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_SCANNER_SET_NAME_SERVERS
+uint16_t uniffi_netscout_core_checksum_method_scanner_set_name_servers(void
     
 );
 #endif

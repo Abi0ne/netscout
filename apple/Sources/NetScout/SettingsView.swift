@@ -4,12 +4,67 @@ import SwiftUI
 struct SettingsView: View {
     var body: some View {
         TabView {
+            ScanSettings()
+                .tabItem { Label("Scansione", systemImage: "dot.radiowaves.left.and.right") }
             IntegrationsSettings()
                 .tabItem { Label("Integrazioni", systemImage: "puzzlepiece.extension") }
             UpdateSettings()
                 .tabItem { Label("Aggiornamento", systemImage: "arrow.triangle.2.circlepath") }
         }
         .frame(width: 520)
+    }
+}
+
+/// The DNS servers the deep profile asks for names (see `NameServers`).
+enum NameServers {
+    static let key = "nameServers"
+
+    /// The IPv4 addresses written in the setting (spaces or commas between).
+    static var configured: [String] {
+        addresses(in: UserDefaults.standard.string(forKey: key) ?? "")
+    }
+
+    static func addresses(in text: String) -> [String] {
+        words(in: text).filter(isIPv4)
+    }
+
+    static func words(in text: String) -> [String] {
+        text.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isWhitespace }).map(String.init)
+    }
+
+    static func isIPv4(_ text: String) -> Bool {
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        return parts.count == 4 && parts.allSatisfy { UInt8($0) != nil }
+    }
+}
+
+private struct ScanSettings: View {
+    @AppStorage(NameServers.key) private var nameServers = ""
+
+    private var invalid: [String] {
+        NameServers.words(in: nameServers).filter { !NameServers.isIPv4($0) }
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Server DNS", text: $nameServers, prompt: Text("es. 10.0.0.10, 10.0.0.11"))
+                if !invalid.isEmpty {
+                    Label("Non sono indirizzi IPv4, verranno ignorati: \(invalid.joined(separator: ", "))",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } header: {
+                Text("Nomi dei dispositivi (scansione approfondita)")
+            } footer: {
+                Text("Con il profilo Approfondita, e con «Scansione approfondita» sul singolo dispositivo, NetScout cerca i nomi anche dove mDNS e NetBIOS non arrivano, ad esempio da un'altra VLAN: chiede il nome ai PC Windows (condivisione file e Desktop remoto), legge i certificati delle pagine web e interroga direttamente i server DNS. Oltre ai dispositivi della rete scansionata che fanno da DNS, chiede a quelli indicati qui: in una rete aziendale, di solito i domain controller.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

@@ -33,6 +33,7 @@
 //!   `ScanError` type; no raw pointers or unwinds ever cross the boundary.
 
 pub mod classify;
+mod deep_names;
 mod engine;
 pub mod error;
 pub mod export;
