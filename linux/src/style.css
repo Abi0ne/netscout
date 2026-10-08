@@ -41,3 +41,108 @@
 .help-note {
   padding: 12px;
 }
+
+/* The tabs, as pills at the start of the middle pane: the selected one
+   filled with the accent colour. */
+.tab-switcher {
+  margin-left: 4px;
+}
+.tab-pill {
+  border-radius: 999px;
+  padding: 2px 12px;
+  min-height: 26px;
+  background: none;
+  box-shadow: none;
+  color: color-mix(in srgb, currentColor 70%, transparent);
+}
+.tab-pill:hover {
+  background-color: color-mix(in srgb, currentColor 8%, transparent);
+}
+.tab-pill:checked {
+  background-color: var(--accent-bg-color);
+  color: var(--accent-fg-color);
+  font-weight: 600;
+}
+
+/* The app's name in the middle of the window, over the header bars. */
+.window-title {
+  margin-top: 14px;
+  font-weight: 600;
+  color: color-mix(in srgb, currentColor 70%, transparent);
+}
+
+/* "Dispositivi": a little larger than the other headings, apart from its
+   list. */
+.devices-heading {
+  font-size: 1.1em;
+  margin-bottom: 6px;
+}
+
+/* The scan controls pinned at the bottom of the sidebar. */
+.scan-panel {
+  padding: 12px;
+}
+.scan-panel.compact {
+  padding: 8px;
+}
+
+/* Notes in the table: a pencil on the row under the mouse; the hint only
+   there too. */
+.note-entry {
+  background: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 0;
+}
+.note-entry text placeholder {
+  opacity: 0;
+}
+columnview row:hover .note-entry text placeholder,
+.note-entry:focus-within text placeholder {
+  opacity: 1;
+}
+.note-pencil {
+  min-height: 20px;
+  min-width: 20px;
+  padding: 0 2px;
+  color: var(--accent-color);
+  opacity: 0;
+}
+columnview row:hover .note-pencil {
+  opacity: 1;
+}
+.note-entry:focus-within + .note-pencil {
+  opacity: 0;
+}
+
+/* The note in the device card. */
+.note-frame {
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background-color: var(--view-bg-color);
+}
+.note-view {
+  background: none;
+}
+
+.small-button {
+  min-height: 24px;
+  padding: 0 10px;
+}
+
+/* The deep scan button in the card. */
+.pill-button {
+  border-radius: 999px;
+  padding: 4px 14px;
+}
+
+/* The scan profile: three names in the sidebar's width. */
+.scan-profile {
+  font-size: 0.93em;
+}
+.scan-profile > toggle,
+.scan-profile > button {
+  padding-left: 4px;
+  padding-right: 4px;
+  min-width: 0;
+}

@@ -7,6 +7,7 @@ mod config;
 mod detail;
 mod help;
 mod labels;
+mod settings;
 mod table;
 mod terminal;
 mod window;
@@ -22,8 +23,13 @@ fn main() -> glib::ExitCode {
     app.connect_startup(|app| {
         load_css();
         let quit = gtk::gio::SimpleAction::new("quit", None);
+        // Closing the windows (not `quit`) lets a window ask about unsaved notes.
         let a = app.clone();
-        quit.connect_activate(move |_, _| a.quit());
+        quit.connect_activate(move |_, _| {
+            for w in a.windows() {
+                w.close();
+            }
+        });
         app.add_action(&quit);
         app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
     });

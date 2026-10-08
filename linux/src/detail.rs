@@ -1,5 +1,6 @@
-//! The device card on the right: identity, addresses, latency and open ports,
-//! with the actions on them (browser, terminal, deep scan, Wake-on-LAN).
+//! The device card on the right: identity, the device's note, the deep scan,
+//! addresses, latency and open ports, with the actions on them (browser,
+//! terminal, Wake-on-LAN).
 
 use std::rc::Rc;
 
@@ -26,6 +27,30 @@ pub struct Actions {
     pub connect: ConnectFn,
 }
 
+/// The device's note in the card: the same note as in the table's column,
+/// in the profile the scan belongs to.
+pub struct NoteCard {
+    /// The profile the note goes to; `None` when the scan belongs to none.
+    pub profile_name: Option<String>,
+    /// The scan has finished (without a profile: it can be saved as one).
+    pub finished: bool,
+    pub text: String,
+    pub set: Box<dyn Fn(String)>,
+    pub save: Box<dyn Fn()>,
+    pub discard: Box<dyn Fn()>,
+}
+
+/// The parts of a card the window updates in place while the note is
+/// edited (rebuilding the card would take the focus away).
+pub struct Card {
+    pub widget: gtk::Widget,
+    pub note: Option<gtk::TextBuffer>,
+    /// "Not saved", with Discard and Save.
+    pub unsaved: Option<gtk::Widget>,
+    /// Where the note goes, shown while it is saved.
+    pub caption: Option<gtk::Label>,
+}
+
 /// Placeholder shown with nothing selected.
 pub fn empty() -> gtk::Widget {
     adw::StatusPage::builder()
@@ -37,7 +62,13 @@ pub fn empty() -> gtk::Widget {
         .upcast()
 }
 
-pub fn build(host: &Host, offline: bool, deep_scanning: bool, actions: Actions) -> gtk::Widget {
+pub fn build(
+    host: &Host,
+    offline: bool,
+    deep_scanning: bool,
+    note: NoteCard,
+    actions: Actions,
+) -> Card {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 20);
     content.set_margin_top(24);
     content.set_margin_bottom(24);
@@ -45,15 +76,17 @@ pub fn build(host: &Host, offline: bool, deep_scanning: bool, actions: Actions) 
     content.set_margin_end(24);
 
     content.append(&header(host, offline));
-    content.append(&deep_scan_button(
+    if offline {
+        content.append(&wake_section(host, actions.wake, actions.forget));
+    }
+    let (note_section, buffer, unsaved, caption) = note_section(note);
+    content.append(&note_section);
+    content.append(&deep_scan_section(
         host,
         offline,
         deep_scanning,
         actions.deep_scan,
     ));
-    if offline {
-        content.append(&wake_section(host, actions.wake, actions.forget));
-    }
     content.append(&info_grid(host, offline));
     content.append(&ports_section(
         host,
@@ -65,7 +98,117 @@ pub fn build(host: &Host, offline: bool, deep_scanning: bool, actions: Actions) 
     let scroller = gtk::ScrolledWindow::new();
     scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
     scroller.set_child(Some(&content));
-    scroller.upcast()
+    Card {
+        widget: scroller.upcast(),
+        note: buffer,
+        unsaved,
+        caption,
+    }
+}
+
+/// Where a note goes, under the field while it is saved.
+pub fn note_caption(profile: &str, note: &str) -> String {
+    if note.trim().is_empty() {
+        format!("Andrà nel profilo «{profile}».")
+    } else {
+        format!("Salvata nel profilo «{profile}».")
+    }
+}
+
+type NoteParts = (
+    gtk::Widget,
+    Option<gtk::TextBuffer>,
+    Option<gtk::Widget>,
+    Option<gtk::Label>,
+);
+
+fn note_section(note: NoteCard) -> NoteParts {
+    let b = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let title = gtk::Label::new(Some("Nota"));
+    title.set_xalign(0.0);
+    title.add_css_class("heading");
+    b.append(&title);
+    let Some(profile) = note.profile_name else {
+        let hint = wrapped(if note.finished {
+            "Per scrivere note, salva la scansione come profilo (barra laterale, «Salva come profilo…»)."
+        } else {
+            "Le note si potranno scrivere a scansione finita, salvandola come profilo."
+        });
+        hint.add_css_class("dim-label");
+        b.append(&hint);
+        return (b.upcast(), None, None, None);
+    };
+    let buffer = gtk::TextBuffer::new(None);
+    buffer.set_text(&note.text);
+    let view = gtk::TextView::builder()
+        .buffer(&buffer)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .top_margin(6)
+        .bottom_margin(6)
+        .left_margin(8)
+        .right_margin(8)
+        .accepts_tab(false)
+        .build();
+    view.add_css_class("note-view");
+    view.set_tooltip_text(Some("Scrivi una nota su questo dispositivo"));
+    // Two lines at least, six at most, then it scrolls.
+    let scroller = gtk::ScrolledWindow::builder()
+        .child(&view)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(48)
+        .max_content_height(120)
+        .propagate_natural_height(true)
+        .build();
+    scroller.add_css_class("note-frame");
+    b.append(&scroller);
+    let set = note.set;
+    buffer.connect_changed(move |buf| {
+        let (start, end) = buf.bounds();
+        set(buf.text(&start, &end, false).to_string());
+    });
+
+    let caption = gtk::Label::new(Some(&note_caption(&profile, &note.text)));
+    caption.set_xalign(0.0);
+    caption.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    caption.add_css_class("caption");
+    caption.add_css_class("dim-label");
+    b.append(&caption);
+    let unsaved = unsaved_bar(note.save, note.discard, None);
+    b.append(&unsaved);
+    (b.upcast(), Some(buffer), Some(unsaved), Some(caption))
+}
+
+/// "Not saved", with Discard and Save; hidden until notes change. `shortcut`
+/// names Save's keyboard shortcut, for its tooltip.
+pub fn unsaved_bar(
+    save: Box<dyn Fn()>,
+    discard: Box<dyn Fn()>,
+    shortcut: Option<&str>,
+) -> gtk::Widget {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let icon = gtk::Image::from_icon_name("document-edit-symbolic");
+    icon.add_css_class("warning");
+    b.append(&icon);
+    let l = gtk::Label::new(Some("Non salvate"));
+    l.set_xalign(0.0);
+    l.set_hexpand(true);
+    l.add_css_class("warning");
+    b.append(&l);
+    let discard_button = gtk::Button::with_label("Annulla");
+    discard_button.add_css_class("small-button");
+    discard_button.connect_clicked(move |_| discard());
+    let save_button = gtk::Button::with_label("Salva");
+    save_button.add_css_class("suggested-action");
+    save_button.add_css_class("small-button");
+    save_button.set_tooltip_text(Some(&match shortcut {
+        Some(s) => format!("Salva le note nel profilo ({s})"),
+        None => "Salva le note nel profilo".to_string(),
+    }));
+    save_button.connect_clicked(move |_| save());
+    b.append(&discard_button);
+    b.append(&save_button);
+    b.set_visible(false);
+    b.upcast()
 }
 
 fn header(host: &Host, offline: bool) -> gtk::Widget {
@@ -100,14 +243,17 @@ fn header(host: &Host, offline: bool) -> gtk::Widget {
     row.upcast()
 }
 
-fn deep_scan_button(
+/// The deep scan of this device: a large button and what it does.
+fn deep_scan_section(
     host: &Host,
     offline: bool,
     running: bool,
     deep_scan: Box<dyn Fn(&str)>,
 ) -> gtk::Widget {
+    let b = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let button = gtk::Button::new();
     button.set_halign(gtk::Align::Start);
+    button.add_css_class("pill-button");
     if running {
         let b = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         b.append(&adw::Spinner::new());
@@ -125,14 +271,17 @@ fn deep_scan_button(
             .build();
         button.set_child(Some(&content));
     }
-    button.set_tooltip_text(Some(if offline {
-        "Riscansiona questo indirizzo per vedere se il dispositivo si è acceso"
-    } else {
-        "Riscansiona questo dispositivo con il profilo approfondito"
-    }));
     let ip = host.ip.clone();
     button.connect_clicked(move |_| deep_scan(&ip));
-    button.upcast()
+    b.append(&button);
+    let description = wrapped(if offline {
+        "Riscansiona questo indirizzo per vedere se il dispositivo si è acceso."
+    } else {
+        "Riscansiona solo questo dispositivo con il profilo approfondito: più porte e più tempo per rispondere, per scoprire servizi sfuggiti alla scansione della rete, e i nomi che arrivano anche da un'altra VLAN (Windows, certificati, DNS)."
+    });
+    description.add_css_class("dim-label");
+    b.append(&description);
+    b.upcast()
 }
 
 fn wake_section(host: &Host, wake: WakeFn, forget: Box<dyn Fn(&str)>) -> gtk::Widget {
