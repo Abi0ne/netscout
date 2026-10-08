@@ -79,7 +79,23 @@ struct ProfilesDetail: View {
                 )
             }
         }
+        // Here rather than in ProfileDetailView, which is rebuilt for each
+        // profile: an item that comes and goes makes the toolbar re-lay out
+        // and its items jump.
         .toolbar {
+            ToolbarItem {
+                Button {
+                    if let id = model.selectedProfileID { model.compareScan(withProfile: id) }
+                } label: {
+                    Label("Confronta con la scansione corrente", systemImage: "arrow.left.arrow.right")
+                }
+                .help(model.selectedProfileID == nil
+                    ? "Seleziona un profilo"
+                    : model.hasFinishedScan
+                        ? "Trova le differenze tra la scansione corrente e questo profilo"
+                        : "Esegui prima una scansione completa")
+                .disabled(model.selectedProfileID == nil || !model.hasFinishedScan)
+            }
             ToolbarItem {
                 Menu {
                     if let id = model.selectedProfileID,
@@ -213,19 +229,6 @@ private struct ProfileDetailView: View {
                     setNote: { model.setNote($0, profile: summary.id, host: $1) }
                 )
             )
-        }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    model.compareScan(withProfile: summary.id)
-                } label: {
-                    Label("Confronta con la scansione corrente", systemImage: "arrow.left.arrow.right")
-                }
-                .help(model.hasFinishedScan
-                    ? "Trova le differenze tra la scansione corrente e questo profilo"
-                    : "Esegui prima una scansione completa")
-                .disabled(!model.hasFinishedScan)
-            }
         }
     }
 
