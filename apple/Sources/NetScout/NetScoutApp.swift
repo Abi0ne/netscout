@@ -14,6 +14,7 @@ struct NetScoutApp: App {
                 .environment(updater)
                 .frame(minWidth: 900, minHeight: 520)
                 .task {
+                    appDelegate.model = model
                     updater.isBusy = { [model] in model.isScanning }
                     await updater.runPeriodicChecks()
                 }
@@ -60,8 +61,18 @@ private struct HelpMenuItem: View {
 }
 
 /// Makes the app a regular foreground app even when launched as a bare
-/// executable (`swift run`), and quits when the last window closes.
+/// executable (`swift run`), quits when the last window closes, and asks
+/// about notes not saved before quitting.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var model: ScanModel?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated {
+            guard let model else { return .terminateNow }
+            return UnsavedNotesPrompt.allowsClosing(model) ? .terminateNow : .terminateCancel
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()

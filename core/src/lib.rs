@@ -13,8 +13,11 @@
 //!   `start_scan`, `cancel`, `scan_host`, `wake_on_lan`.
 //! * [`ScanObserver`] — callback interface the engine streams results through.
 //! * [`ProfileStore`] (via `open_profile_store(dir)`) — saved scans:
-//!   `list`, `load`, `save`, `update`, `rename`, `delete`; `diff_hosts` compares a scan
-//!   with a saved profile (`ScanDiff`, `HostChange`).
+//!   `list`, `load`, `load_all`, `save`, `update`, `set_notes`, `rename`, `delete`;
+//!   `diff_hosts` compares a scan with a saved profile (`ScanDiff`, `HostChange`);
+//!   `match_profile`/`host_matches` search profiles (notes by `device_key`);
+//!   `recognize_network` finds the profile of the network being scanned
+//!   (`NetworkMatch`); `profiles_csv` exports profiles as CSV.
 //! * [`ScanError`] — the FFI error enum.
 //! * Records: `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`,
 //!   `Progress`, `Summary`, `DeviceTypeCount`.
@@ -32,12 +35,14 @@
 pub mod classify;
 mod engine;
 pub mod error;
+pub mod export;
 pub mod icmp;
 pub mod liveness;
 pub mod names;
 pub mod oui;
 pub mod platform;
 pub mod profiles;
+pub mod recognize;
 pub mod scanner;
 pub mod targets;
 pub mod tcp_probe;
@@ -45,11 +50,13 @@ pub mod types;
 pub mod wol;
 
 pub use error::ScanError;
+pub use export::profiles_csv;
 pub use platform::requires_multicast_lock;
 pub use profiles::{
-    diff_hosts, open_profile_store, HostChange, ProfileStore, ProfileSummary, SavedProfile,
-    ScanDiff,
+    device_key, diff_hosts, host_matches, match_profile, open_profile_store, HostChange,
+    ProfileMatch, ProfileStore, ProfileSummary, SavedProfile, ScanDiff,
 };
+pub use recognize::{recognize_network, NetworkMatch};
 pub use scanner::{new_scanner, Scanner};
 pub use types::{
     DeviceType, DeviceTypeCount, Host, NetworkInfo, Port, PortState, Progress, ScanConfig,

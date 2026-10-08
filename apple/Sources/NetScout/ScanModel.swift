@@ -31,8 +31,43 @@ final class ScanModel {
 
     /// Saved profiles, newest first.
     private(set) var profiles: [ProfileSummary] = []
+    /// The same profiles with their devices, by id (search, recognition, export).
+    private(set) var savedProfiles: [String: SavedProfile] = [:]
+    /// Notes edited but not saved yet: profile id → all its notes (by `deviceKey`).
+    private(set) var noteDrafts: [String: [String: String]] = [:]
     /// The comparison on screen, if any.
     var comparison: ProfileComparison?
+
+    /// The tab on screen and the profile selected in the profiles tab.
+    var selectedTab: AppTab = .scan
+    var selectedProfileID: String?
+    /// Each tab's search text (one field in the window toolbar serves both).
+    var scanSearch = ""
+    var profileSearch = ""
+    /// The scan tab's device card (inspector) is shown, and its width: the
+    /// search field above it takes the same width.
+    var showDeviceCard = true
+    var deviceCardWidth: CGFloat = 0
+    /// The sidebar's width, 0 while it is hidden.
+    var sidebarWidth: CGFloat = 0
+    /// The scan tab's selected device and type filter (kept while the
+    /// profiles tab is on screen).
+    var scanSelection: String?
+    var typeFilter: DeviceType?
+
+    /// The profile this scan was saved as, if it was.
+    private(set) var savedScanProfileID: String?
+
+    /// The saved profile this scan's network was recognized as, if any.
+    private(set) var recognizedNetwork: NetworkMatch?
+    /// The recognized network on offer in an alert.
+    var networkSuggestion: NetworkMatch?
+    /// Compare with this profile as soon as the scan finishes.
+    private var pendingComparisonID: String?
+    /// Identifiable devices seen at the last recognition attempt; the next
+    /// one runs only when there are more.
+    private var recognitionBasis = -1
+    private var suggestedThisScan = false
 
     /// Host updates waiting for the next coalesced flush (see `enqueue`).
     fileprivate var pendingHosts: [String: Host] = [:]
@@ -150,6 +185,12 @@ final class ScanModel {
         summary = nil
         errorMessage = nil
         comparison = nil
+        recognizedNetwork = nil
+        savedScanProfileID = nil
+        networkSuggestion = nil
+        pendingComparisonID = nil
+        recognitionBasis = -1
+        suggestedThisScan = false
         scannedTarget = trimmed
         scannedProfile = profile
         let observer = ObserverBridge { [weak self] event in
@@ -218,6 +259,10 @@ final class ScanModel {
             flushHosts()
             summary = s
             isScanning = false
+            if let id = pendingComparisonID {
+                pendingComparisonID = nil
+                compareScan(withProfile: id)
+            }
         case .error(let message):
             errorMessage = message
         }
@@ -264,9 +309,14 @@ extension ScanModel {
         guard let profileStore else { return }
         do {
             profiles = try profileStore.list()
+            savedProfiles = Dictionary(
+                try profileStore.loadAll().map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
         } catch {
             errorMessage = "Impossibile leggere i profili: \(error)"
         }
+        noteDrafts = noteDrafts.filter { savedProfiles[$0.key] != nil }
     }
 
     /// Save the finished scan as a new profile; returns it on success.
@@ -278,6 +328,10 @@ extension ScanModel {
                 name: name, target: scannedTarget, scanProfile: scannedProfile,
                 hosts: sortedHosts, offlineHosts: sortedOfflineHosts
             )
+            // The notes shown with the scan go along with it.
+            let notes = scanNotes
+            if !notes.isEmpty { try profileStore.setNotes(id: saved.id, notes: notes) }
+            savedScanProfileID = saved.id
             refreshProfiles()
             return saved
         } catch {
@@ -311,6 +365,8 @@ extension ScanModel {
             errorMessage = "Impossibile eliminare il profilo: \(error)"
         }
         if comparison?.profile.id == id { comparison = nil }
+        if selectedProfileID == id { selectedProfileID = nil }
+        noteDrafts[id] = nil
         refreshProfiles()
     }
 
@@ -324,6 +380,140 @@ extension ScanModel {
             targetDiffers: saved.target != scannedTarget,
             depthDiffers: saved.scanProfile != scannedProfile
         )
+    }
+}
+
+// MARK: - Notes on devices
+
+extension ScanModel {
+    /// The note on screen for `host` in profile `id`: the draft, else the saved one.
+    func note(profile id: String, host: Host) -> String {
+        notes(profile: id)[deviceKey(host: host)] ?? ""
+    }
+
+    /// Every note of profile `id` as on screen.
+    func notes(profile id: String) -> [String: String] {
+        noteDrafts[id] ?? savedProfiles[id]?.notes ?? [:]
+    }
+
+    func setNote(_ text: String, profile id: String, host: Host) {
+        var notes = notes(profile: id)
+        notes[deviceKey(host: host)] = text
+        let saved = savedProfiles[id]?.notes ?? [:]
+        noteDrafts[id] = Self.clean(notes) == Self.clean(saved) ? nil : notes
+    }
+
+    func hasUnsavedNotes(profile id: String) -> Bool { noteDrafts[id] != nil }
+
+    /// Names of the profiles with notes not saved yet.
+    var unsavedProfileNames: [String] {
+        profiles.filter { noteDrafts[$0.id] != nil }.map(\.name)
+    }
+
+    @discardableResult
+    func saveNotes(profile id: String) -> Bool {
+        guard let profileStore, let draft = noteDrafts[id] else { return true }
+        do {
+            try profileStore.setNotes(id: id, notes: draft)
+            noteDrafts[id] = nil
+            refreshProfiles()
+            return true
+        } catch {
+            errorMessage = "Salvataggio delle note non riuscito: \(error)"
+            return false
+        }
+    }
+
+    func discardNotes(profile id: String) {
+        noteDrafts[id] = nil
+    }
+
+    /// Save every draft; false if one could not be saved (it is kept).
+    func saveAllNotes() -> Bool {
+        noteDrafts.keys.sorted().reduce(true) { ok, id in saveNotes(profile: id) && ok }
+    }
+
+    func discardAllNotes() {
+        noteDrafts = [:]
+    }
+
+    /// Profile `id` with the notes on screen (for search and export).
+    func profileWithDrafts(_ id: String) -> SavedProfile? {
+        guard var profile = savedProfiles[id] else { return nil }
+        profile.notes = Self.clean(notes(profile: id))
+        return profile
+    }
+
+    /// The profile whose notes the scan shows and edits: the one it was
+    /// saved as, else the one its network was recognized as.
+    var scanNotesProfileID: String? {
+        [savedScanProfileID, recognizedNetwork?.profileId]
+            .compactMap { $0 }
+            .first { savedProfiles[$0] != nil }
+    }
+
+    /// The notes on screen for the scan's devices.
+    private var scanNotes: [String: String] {
+        guard let id = scanNotesProfileID else { return [:] }
+        let keys = Set((Array(hosts.values) + Array(offlineHosts.values)).map { deviceKey(host: $0) })
+        return Self.clean(notes(profile: id)).filter { keys.contains($0.key) }
+    }
+
+    private static func clean(_ notes: [String: String]) -> [String: String] {
+        notes.mapValues { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.value.isEmpty }
+    }
+}
+
+// MARK: - Recognizing the network
+
+/// The window's tabs.
+enum AppTab: Hashable {
+    case scan, profiles
+}
+
+extension ScanModel {
+    /// Look for this scan's network among the saved profiles, each time
+    /// devices with a stable identifier turn up, and offer the match once.
+    fileprivate func recognizeNetwork() {
+        guard !savedProfiles.isEmpty else { return }
+        let basis = hosts.values.filter { $0.mac != nil || $0.ssdpInfo != nil }.count
+        guard basis > recognitionBasis else { return }
+        recognitionBasis = basis
+        let gateway = networks.compactMap(\.gateway).first { hosts[$0] != nil }
+        let match = NetScoutCore.recognizeNetwork(
+            current: Array(hosts.values), gatewayIp: gateway, profiles: Array(savedProfiles.values)
+        )
+        recognizedNetwork = match
+        if let match, !suggestedThisScan, comparison == nil {
+            suggestedThisScan = true
+            networkSuggestion = match
+            debugLog("network recognized: \(match)")
+        }
+    }
+
+    /// Compare with the recognized profile now, or when the scan finishes.
+    func compareWhenFinished(profile id: String) {
+        if isScanning {
+            pendingComparisonID = id
+        } else {
+            compareScan(withProfile: id)
+        }
+    }
+
+    var comparisonPending: Bool { pendingComparisonID != nil }
+
+    func showProfile(id: String) {
+        selectedProfileID = id
+        selectedTab = .profiles
+    }
+}
+
+// MARK: - CSV export
+
+extension ScanModel {
+    /// The profiles `ids` as CSV, with the notes on screen.
+    func csv(profiles ids: [String]) -> String {
+        profilesCsv(profiles: ids.compactMap(profileWithDrafts))
     }
 }
 
@@ -415,6 +605,7 @@ extension ScanModel {
         hosts.merge(pendingHosts) { _, new in new }
         dropOffline(matching: Array(pendingHosts.values))
         pendingHosts = [:]
+        recognizeNetwork()
     }
 }
 

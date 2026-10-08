@@ -6,7 +6,8 @@
 //! A profile also remembers devices that were known but off when it was
 //! saved (`offline_hosts`), so they can still be woken (Wake-on-LAN) and are
 //! not reported as new when they come back. [`diff_hosts`] compares a scan
-//! against a profile.
+//! against a profile. The user's own notes on each device (`notes`, keyed by
+//! [`device_key`]) are kept across updates of the profile.
 //!
 //! ```text
 //! let store = open_profile_store(dir)?;
@@ -50,6 +51,9 @@ pub struct SavedProfile {
     /// Epoch ms of the last [`ProfileStore::update`], if any.
     #[serde(default)]
     pub updated_at: Option<i64>,
+    /// The user's notes, by [`device_key`]. Never empty strings.
+    #[serde(default)]
+    pub notes: HashMap<String, String>,
 }
 
 /// A profile without its hosts, for listings.
@@ -122,6 +126,21 @@ impl ProfileStore {
         read_file(&self.path(&id)?)
     }
 
+    /// Every readable profile with its devices, newest first (for search,
+    /// network recognition and export).
+    pub fn load_all(self: Arc<Self>) -> Result<Vec<SavedProfile>, ScanError> {
+        let entries = fs::read_dir(&self.dir)
+            .map_err(|e| io_error("read profile directory", &self.dir, e))?;
+        let mut out: Vec<SavedProfile> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .filter_map(|p| read_file(&p).ok())
+            .collect();
+        out.sort_by_key(|p| std::cmp::Reverse(p.created_at));
+        Ok(out)
+    }
+
     /// Save a scan as a new profile called `name`: the `hosts` found up and
     /// the `offline_hosts` known to be off.
     pub fn save(
@@ -151,6 +170,7 @@ impl ProfileStore {
             hosts,
             offline_hosts,
             updated_at: None,
+            notes: HashMap::new(),
         };
         self.write(&profile)?;
         Ok(ProfileSummary::from(&profile))
@@ -167,6 +187,17 @@ impl ProfileStore {
         offline_hosts: Vec<Host>,
     ) -> Result<ProfileSummary, ScanError> {
         let mut profile = read_file(&self.path(&id)?)?;
+        // A device noted by IP (MAC unknown then) whose MAC is known now
+        // keeps its note under the MAC.
+        for host in hosts.iter().chain(&offline_hosts) {
+            let key = device_key(host);
+            let by_ip = format!("ip:{}", host.ip);
+            if key != by_ip && !profile.notes.contains_key(&key) {
+                if let Some(note) = profile.notes.remove(&by_ip) {
+                    profile.notes.insert(key, note);
+                }
+            }
+        }
         profile.target = target;
         profile.scan_profile = scan_profile;
         profile.hosts = hosts;
@@ -174,6 +205,18 @@ impl ProfileStore {
         profile.updated_at = Some(now_ms());
         self.write(&profile)?;
         Ok(ProfileSummary::from(&profile))
+    }
+
+    /// Replace the notes of profile `id` (by [`device_key`]); blank notes
+    /// are dropped.
+    pub fn set_notes(
+        self: Arc<Self>,
+        id: String,
+        notes: HashMap<String, String>,
+    ) -> Result<(), ScanError> {
+        let mut profile = read_file(&self.path(&id)?)?;
+        profile.notes = clean_notes(notes);
+        self.write(&profile)
     }
 
     pub fn rename(self: Arc<Self>, id: String, name: String) -> Result<(), ScanError> {
@@ -218,6 +261,83 @@ impl ProfileStore {
         fs::write(&tmp, json).map_err(|e| io_error("write profile", &tmp, e))?;
         fs::rename(&tmp, &path).map_err(|e| io_error("write profile", &path, e))
     }
+}
+
+/// The key a device's note is stored under: its MAC, or its IP when the
+/// MAC is unknown.
+#[uniffi::export]
+pub fn device_key(host: &Host) -> String {
+    match &host.mac {
+        Some(mac) => format!("mac:{}", norm_mac(mac)),
+        None => format!("ip:{}", host.ip),
+    }
+}
+
+fn clean_notes(notes: HashMap<String, String>) -> HashMap<String, String> {
+    notes
+        .into_iter()
+        .map(|(k, v)| (k, v.trim().to_string()))
+        .filter(|(_, v)| !v.is_empty())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+/// How a saved profile matches a search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ProfileMatch {
+    /// Neither the profile nor any of its devices.
+    None,
+    /// The profile itself: its name or what was scanned. All its devices
+    /// are relevant.
+    Profile,
+    /// Only some of its devices (see [`host_matches`]).
+    Devices,
+}
+
+/// Match `profile` against `query` (case-insensitive substring): its name and
+/// target, then each device as [`host_matches`] does. A blank query matches
+/// the whole profile.
+#[uniffi::export]
+pub fn match_profile(profile: &SavedProfile, query: String) -> ProfileMatch {
+    let q = query.trim().to_lowercase();
+    if q.is_empty()
+        || profile.name.to_lowercase().contains(&q)
+        || profile.target.to_lowercase().contains(&q)
+    {
+        return ProfileMatch::Profile;
+    }
+    let found = profile
+        .hosts
+        .iter()
+        .chain(&profile.offline_hosts)
+        .any(|h| host_matches(h, profile.notes.get(&device_key(h)).cloned(), q.clone()));
+    if found {
+        ProfileMatch::Devices
+    } else {
+        ProfileMatch::None
+    }
+}
+
+/// Whether a device matches `query` (case-insensitive substring): the fields
+/// the scan table's search looks at (IP, MAC, vendor, names) plus its `note`.
+#[uniffi::export]
+pub fn host_matches(host: &Host, note: Option<String>, query: String) -> bool {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    [
+        host.ip.as_str(),
+        host.mac.as_deref().unwrap_or(""),
+        host.vendor.as_deref().unwrap_or(""),
+        note.as_deref().unwrap_or(""),
+    ]
+    .into_iter()
+    .chain(host.hostnames.iter().map(String::as_str))
+    .any(|f| f.to_lowercase().contains(&q))
 }
 
 fn read_file(path: &Path) -> Result<SavedProfile, ScanError> {
@@ -624,6 +744,66 @@ mod tests {
         assert!(store.clone().load("../x".into()).is_err());
         store.clone().delete(saved.id).unwrap();
         assert!(store.list().unwrap().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn notes_survive_updates_and_are_searchable() {
+        let dir = std::env::temp_dir().join(format!("netscout-notes-{}", now_ms()));
+        let store = open_profile_store(dir.to_string_lossy().into()).unwrap();
+        let printer = host("10.0.0.7", None, &[]);
+        let nas = host("10.0.0.8", Some("AA:00:00:00:00:08"), &[]);
+        let id = store
+            .clone()
+            .save(
+                "Casa".into(),
+                "10.0.0.0/24".into(),
+                ScanProfile::Standard,
+                vec![printer.clone(), nas.clone()],
+                vec![],
+            )
+            .unwrap()
+            .id;
+        let notes = HashMap::from([
+            (
+                device_key(&printer),
+                " Stampante del corridoio ".to_string(),
+            ),
+            (device_key(&nas), "   ".to_string()),
+        ]);
+        store.clone().set_notes(id.clone(), notes).unwrap();
+        let saved = store.clone().load(id.clone()).unwrap();
+        assert_eq!(saved.notes.len(), 1);
+        assert_eq!(saved.notes["ip:10.0.0.7"], "Stampante del corridoio");
+
+        assert_eq!(match_profile(&saved, "casa".into()), ProfileMatch::Profile);
+        assert_eq!(
+            match_profile(&saved, "CORRIDOIO".into()),
+            ProfileMatch::Devices
+        );
+        assert_eq!(
+            match_profile(&saved, "aa:00:00:00:00:08".into()),
+            ProfileMatch::Devices
+        );
+        assert_eq!(match_profile(&saved, "ufficio".into()), ProfileMatch::None);
+
+        // The printer's MAC is learned: its note follows it.
+        let printer = host("10.0.0.7", Some("aa:00:00:00:00:07"), &[]);
+        store
+            .clone()
+            .update(
+                id.clone(),
+                "10.0.0.0/24".into(),
+                ScanProfile::Standard,
+                vec![printer],
+                vec![nas],
+            )
+            .unwrap();
+        let saved = store.clone().load(id).unwrap();
+        assert_eq!(
+            saved.notes["mac:aa:00:00:00:00:07"],
+            "Stampante del corridoio"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 }

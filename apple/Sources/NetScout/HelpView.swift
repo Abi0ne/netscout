@@ -82,8 +82,9 @@ struct HelpTopic: Identifiable {
             .text("Funziona **senza privilegi di amministratore**: non serve la password né l'installazione di componenti aggiuntivi. La prima volta macOS può chiederti il permesso di accedere alla **rete locale**: va concesso, altrimenti la scansione non trova nulla."),
             .heading("La finestra"),
             .bullets([
-                "**Scansione** — la scheda principale: a sinistra la rete da analizzare e il riepilogo per tipo, al centro la tabella dei dispositivi, a destra la scheda del dispositivo selezionato.",
+                "**Scansione** — la scheda principale: a sinistra i dispositivi trovati, divisi per tipo, e in fondo la rete da analizzare con il pulsante di avvio (se la finestra è bassa, questi controlli si stringono su due righe per lasciare spazio all'elenco); al centro la tabella dei dispositivi; a destra la scheda del dispositivo selezionato. Il pulsante in alto a sinistra mostra o nasconde la barra laterale, quello in alto a destra la scheda.",
                 "**Profili salvati** — le scansioni che hai salvato, da consultare e confrontare con la rete di oggi.",
+                "Si passa dall'una all'altra con i due pulsanti in alto, all'inizio della tabella, o con ⌘1 e ⌘2.",
                 "**Barra in basso** — la versione di NetScout, gli avvisi di cambio rete e lo stato degli aggiornamenti.",
             ]),
             .heading("I menu"),
@@ -96,7 +97,7 @@ struct HelpTopic: Identifiable {
         ]),
         HelpTopic(title: "Scansione della rete", symbol: "dot.radiowaves.left.and.right", blocks: [
             .heading("Scegliere cosa analizzare"),
-            .text("Nella sezione **Rete** della barra laterale il menu mostra le interfacce attive del Mac (Wi‑Fi, Ethernet, …) con la loro rete: all'avvio è già scelta quella con il router. Puoi anche scrivere tu la destinazione nel campo di testo:"),
+            .text("Nella sezione **Rete**, in fondo alla barra laterale, il menu mostra le interfacce attive del Mac (Wi‑Fi, Ethernet, …) con la loro rete: all'avvio è già scelta quella con il router. Puoi anche scrivere tu la destinazione nel campo di testo:"),
             .bullets([
                 "un indirizzo singolo: `192.168.1.10`",
                 "una rete in notazione CIDR: `192.168.1.0/24`",
@@ -125,16 +126,24 @@ struct HelpTopic: Identifiable {
         ]),
         HelpTopic(title: "Elenco dei dispositivi", symbol: "tablecells", blocks: [
             .text("La tabella mostra per ogni dispositivo **tipo, IP, nome, produttore, MAC, latenza e numero di porte aperte**. Clicca sull'intestazione di una colonna per ordinare."),
+            .heading("Ordinare per più colonne"),
+            .bullets([
+                "**Clic** sull'intestazione — ordina solo per quella colonna; un altro clic inverte l'ordine.",
+                "**⇧-clic** — aggiunge la colonna all'ordinamento dopo le altre; un altro ⇧-clic la inverte, un terzo la toglie.",
+                "Le colonne che partecipano mostrano la priorità e il verso, per esempio **Produttore ¹▲** e **Nome ²▼**: prima per produttore, a parità di produttore per nome.",
+            ]),
+            .heading("Larghezza delle colonne"),
+            .text("Fai **doppio clic sul separatore** a destra dell'intestazione di una colonna per adattarne la larghezza al testo più lungo, intestazione compresa, tra i dispositivi elencati."),
             .heading("Filtrare e cercare"),
             .bullets([
-                "Nella sezione **Dispositivi** della barra laterale trovi quanti dispositivi ci sono per ciascun tipo: clicca un tipo per vedere solo quelli, ricliccalo (o scegli **Tutti**) per tornare all'elenco completo.",
-                "Il campo di ricerca nella barra in alto filtra per IP, nome, produttore o MAC.",
+                "Nella sezione **Dispositivi**, in cima alla barra laterale, trovi quanti dispositivi ci sono per ciascun tipo: clicca un tipo per vedere solo quelli, ricliccalo (o scegli **Tutti**) per tornare all'elenco completo.",
+                "Il campo di ricerca in alto a destra, sopra la scheda del dispositivo e largo quanto lei, filtra per IP, nome, produttore o MAC.",
             ]),
             .heading("Dispositivi spenti"),
             .text("Dopo un confronto con un profilo puoi aggiungere alla tabella i dispositivi salvati ma non trovati: compaiono in grigio, in fondo, con l'etichetta **Spento**. Dal menu contestuale (clic destro) puoi toglierli dall'elenco."),
         ]),
         HelpTopic(title: "Scheda del dispositivo", symbol: "sidebar.right", blocks: [
-            .text("Seleziona un dispositivo per aprire la sua scheda a destra. Il pulsante con l'icona del pannello, in alto a destra, la mostra o la nasconde."),
+            .text("Seleziona un dispositivo per aprire la sua scheda a destra. Il pulsante con l'icona del pannello, in alto a destra dopo il campo di ricerca, la mostra o la nasconde."),
             .heading("Cosa contiene"),
             .bullets([
                 "**Indirizzo IP, MAC, produttore e nomi** — tutti selezionabili per copiarli.",
@@ -148,7 +157,7 @@ struct HelpTopic: Identifiable {
                 "**Merlin** — sulle porte SSH, Telnet e RDP, se l'integrazione è attiva. Vedi *Integrazioni*.",
             ]),
             .heading("Scansione approfondita"),
-            .text("Il pulsante **Scansione approfondita** nella barra in alto rianalizza solo quel dispositivo con il profilo approfondito, per scoprire porte e servizi che la scansione rapida o standard non controlla. Su un dispositivo spento diventa **Riscansiona**, per verificare se nel frattempo si è acceso."),
+            .text("Il pulsante **Scansione approfondita**, nella scheda sotto il nome del dispositivo, rianalizza solo quel dispositivo con il profilo approfondito, per scoprire porte e servizi che la scansione rapida o standard non controlla. Su un dispositivo spento diventa **Riscansiona**, per verificare se nel frattempo si è acceso."),
         ]),
         HelpTopic(title: "Connessioni remote", symbol: "terminal", blocks: [
             .text("Accanto alle porte **SSH (22)** e **Telnet (23)** il pulsante **Terminale** apre una sessione nell'app Terminale di macOS."),
@@ -191,6 +200,22 @@ struct HelpTopic: Identifiable {
                 "**Aggiungere gli spenti alla scansione** — per vederli in tabella e accenderli con il Wake-on-LAN.",
                 "**Aggiornare il profilo** — sostituirlo con la scansione attuale; i dispositivi spenti restano nel profilo.",
             ]),
+            .heading("Note sui dispositivi"),
+            .text("Nella tabella di un profilo, la colonna **Note** si modifica con un clic: scrivi dove si trova un dispositivo, a chi appartiene o qualsiasi altra informazione. Le note restano legate al dispositivo (dal MAC) anche quando aggiorni il profilo."),
+            .text("La colonna **Note** c'è anche nella tabella della scansione: mostra le note del profilo della rete riconosciuta, o di quello in cui hai appena salvato la scansione. Passando col mouse su una riga compare una matita nella colonna: cliccala per scrivere. La stessa nota si modifica anche nella scheda del dispositivo selezionato, a destra. Le modifiche, su tutti i dispositivi, vanno nel profilo: si salvano con **Salva** (⌘S) nella sezione **Note** della barra laterale o nella scheda, e chiudendo la finestra NetScout chiede cosa fare di quelle non salvate. Se la rete non è in nessun profilo, salva prima la scansione come profilo. Salvando come nuovo profilo una scansione riconosciuta, le sue note passano anche al nuovo profilo."),
+            .text("Le modifiche si salvano con **Salva note** (⌘S) o si scartano con **Annulla modifiche**; finché non le salvi il profilo ha un pallino arancione nell'elenco. Se chiudi la finestra o esci con note non salvate, NetScout chiede se salvarle."),
+            .heading("Cercare"),
+            .text("Il campo di ricerca in alto filtra i profili per nome o rete scansionata, oppure per i dispositivi che contengono (IP, nome, produttore, MAC o nota). Se a corrispondere sono solo alcuni dispositivi, la tabella del profilo mostra solo quelli."),
+            .heading("Rete riconosciuta"),
+            .text("Durante una scansione NetScout confronta i dispositivi trovati con i profili salvati e, se riconosce la rete, te lo segnala proponendo di confrontarla con il profilo."),
+            .bullets([
+                "Basta ritrovare il **router** (lo stesso MAC del gateway) in un profilo.",
+                "Senza il router servono almeno **3 dispositivi** del profilo, e almeno la metà di quelli riconoscibili.",
+                "Contano solo identificatori stabili: il MAC assegnato dal produttore e, se il MAC manca, l'identificativo UPnP. IP, nomi e MAC privati (telefoni, tablet) non vengono usati.",
+                "Se due profili di reti diverse corrispondono allo stesso modo, NetScout non propone nulla.",
+            ]),
+            .heading("Esportare in CSV"),
+            .text("Il pulsante **Esporta CSV** in alto (o il clic destro su un profilo) salva un file con un dispositivo per riga: profilo, rete, date, stato, IP, nomi, tipo, produttore, MAC, latenza, porte aperte, servizi e note. Il file usa il punto e virgola come separatore e si apre direttamente in Excel o Numeri con le lettere accentate corrette."),
         ]),
         HelpTopic(title: "Integrazioni", symbol: "puzzlepiece.extension", blocks: [
             .text("Le integrazioni si gestiscono in **NetScout → Impostazioni… → Integrazioni**."),

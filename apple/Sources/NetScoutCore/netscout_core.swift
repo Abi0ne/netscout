@@ -558,6 +558,12 @@ public protocol ProfileStoreProtocol : AnyObject {
     
     func load(id: String) throws  -> SavedProfile
     
+    /**
+     * Every readable profile with its devices, newest first (for search,
+     * network recognition and export).
+     */
+    func loadAll() throws  -> [SavedProfile]
+    
     func rename(id: String, name: String) throws 
     
     /**
@@ -565,6 +571,12 @@ public protocol ProfileStoreProtocol : AnyObject {
      * the `offline_hosts` known to be off.
      */
     func save(name: String, target: String, scanProfile: ScanProfile, hosts: [Host], offlineHosts: [Host]) throws  -> ProfileSummary
+    
+    /**
+     * Replace the notes of profile `id` (by [`device_key`]); blank notes
+     * are dropped.
+     */
+    func setNotes(id: String, notes: [String: String]) throws 
     
     /**
      * Replace the devices of profile `id` with a newer scan, keeping its
@@ -652,6 +664,17 @@ open func load(id: String)throws  -> SavedProfile {
 })
 }
     
+    /**
+     * Every readable profile with its devices, newest first (for search,
+     * network recognition and export).
+     */
+open func loadAll()throws  -> [SavedProfile] {
+    return try  FfiConverterSequenceTypeSavedProfile.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_load_all(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
 open func rename(id: String, name: String)throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
     uniffi_netscout_core_fn_method_profilestore_rename(self.uniffiClonePointer(),
         FfiConverterString.lower(id),
@@ -674,6 +697,18 @@ open func save(name: String, target: String, scanProfile: ScanProfile, hosts: [H
         FfiConverterSequenceTypeHost.lower(offlineHosts),$0
     )
 })
+}
+    
+    /**
+     * Replace the notes of profile `id` (by [`device_key`]); blank notes
+     * are dropped.
+     */
+open func setNotes(id: String, notes: [String: String])throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_set_notes(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterDictionaryStringString.lower(notes),$0
+    )
+}
 }
     
     /**
@@ -1533,6 +1568,119 @@ public func FfiConverterTypeNetworkInfo_lower(_ value: NetworkInfo) -> RustBuffe
 
 
 /**
+ * The saved profile the scanned network appears to be.
+ */
+public struct NetworkMatch {
+    public var profileId: String
+    public var profileName: String
+    /**
+     * The scan's gateway (by MAC) is one of the profile's devices.
+     */
+    public var gatewayMatched: Bool
+    /**
+     * Devices of the scan found in the profile by a stable identifier,
+     * the gateway included.
+     */
+    public var matchedDevices: UInt32
+    /**
+     * Devices of the profile that have a stable identifier.
+     */
+    public var profileDevices: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(profileId: String, profileName: String, 
+        /**
+         * The scan's gateway (by MAC) is one of the profile's devices.
+         */gatewayMatched: Bool, 
+        /**
+         * Devices of the scan found in the profile by a stable identifier,
+         * the gateway included.
+         */matchedDevices: UInt32, 
+        /**
+         * Devices of the profile that have a stable identifier.
+         */profileDevices: UInt32) {
+        self.profileId = profileId
+        self.profileName = profileName
+        self.gatewayMatched = gatewayMatched
+        self.matchedDevices = matchedDevices
+        self.profileDevices = profileDevices
+    }
+}
+
+
+
+extension NetworkMatch: Equatable, Hashable {
+    public static func ==(lhs: NetworkMatch, rhs: NetworkMatch) -> Bool {
+        if lhs.profileId != rhs.profileId {
+            return false
+        }
+        if lhs.profileName != rhs.profileName {
+            return false
+        }
+        if lhs.gatewayMatched != rhs.gatewayMatched {
+            return false
+        }
+        if lhs.matchedDevices != rhs.matchedDevices {
+            return false
+        }
+        if lhs.profileDevices != rhs.profileDevices {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(profileId)
+        hasher.combine(profileName)
+        hasher.combine(gatewayMatched)
+        hasher.combine(matchedDevices)
+        hasher.combine(profileDevices)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNetworkMatch: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkMatch {
+        return
+            try NetworkMatch(
+                profileId: FfiConverterString.read(from: &buf), 
+                profileName: FfiConverterString.read(from: &buf), 
+                gatewayMatched: FfiConverterBool.read(from: &buf), 
+                matchedDevices: FfiConverterUInt32.read(from: &buf), 
+                profileDevices: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NetworkMatch, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.profileId, into: &buf)
+        FfiConverterString.write(value.profileName, into: &buf)
+        FfiConverterBool.write(value.gatewayMatched, into: &buf)
+        FfiConverterUInt32.write(value.matchedDevices, into: &buf)
+        FfiConverterUInt32.write(value.profileDevices, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkMatch_lift(_ buf: RustBuffer) throws -> NetworkMatch {
+    return try FfiConverterTypeNetworkMatch.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkMatch_lower(_ value: NetworkMatch) -> RustBuffer {
+    return FfiConverterTypeNetworkMatch.lower(value)
+}
+
+
+/**
  * A single probed port on a host.
  */
 public struct Port {
@@ -1886,6 +2034,10 @@ public struct SavedProfile {
      * Epoch ms of the last [`ProfileStore::update`], if any.
      */
     public var updatedAt: Int64?
+    /**
+     * The user's notes, by [`device_key`]. Never empty strings.
+     */
+    public var notes: [String: String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1908,7 +2060,10 @@ public struct SavedProfile {
          */offlineHosts: [Host], 
         /**
          * Epoch ms of the last [`ProfileStore::update`], if any.
-         */updatedAt: Int64?) {
+         */updatedAt: Int64?, 
+        /**
+         * The user's notes, by [`device_key`]. Never empty strings.
+         */notes: [String: String]) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
@@ -1917,6 +2072,7 @@ public struct SavedProfile {
         self.hosts = hosts
         self.offlineHosts = offlineHosts
         self.updatedAt = updatedAt
+        self.notes = notes
     }
 }
 
@@ -1948,6 +2104,9 @@ extension SavedProfile: Equatable, Hashable {
         if lhs.updatedAt != rhs.updatedAt {
             return false
         }
+        if lhs.notes != rhs.notes {
+            return false
+        }
         return true
     }
 
@@ -1960,6 +2119,7 @@ extension SavedProfile: Equatable, Hashable {
         hasher.combine(hosts)
         hasher.combine(offlineHosts)
         hasher.combine(updatedAt)
+        hasher.combine(notes)
     }
 }
 
@@ -1978,7 +2138,8 @@ public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
                 scanProfile: FfiConverterTypeScanProfile.read(from: &buf), 
                 hosts: FfiConverterSequenceTypeHost.read(from: &buf), 
                 offlineHosts: FfiConverterSequenceTypeHost.read(from: &buf), 
-                updatedAt: FfiConverterOptionInt64.read(from: &buf)
+                updatedAt: FfiConverterOptionInt64.read(from: &buf), 
+                notes: FfiConverterDictionaryStringString.read(from: &buf)
         )
     }
 
@@ -1991,6 +2152,7 @@ public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
         FfiConverterSequenceTypeHost.write(value.hosts, into: &buf)
         FfiConverterSequenceTypeHost.write(value.offlineHosts, into: &buf)
         FfiConverterOptionInt64.write(value.updatedAt, into: &buf)
+        FfiConverterDictionaryStringString.write(value.notes, into: &buf)
     }
 }
 
@@ -2861,6 +3023,90 @@ extension PortState: Equatable, Hashable {}
 
 
 
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+/**
+ * How a saved profile matches a search.
+ */
+
+public enum ProfileMatch {
+    
+    /**
+     * Neither the profile nor any of its devices.
+     */
+    case none
+    /**
+     * The profile itself: its name or what was scanned. All its devices
+     * are relevant.
+     */
+    case profile
+    /**
+     * Only some of its devices (see [`host_matches`]).
+     */
+    case devices
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProfileMatch: FfiConverterRustBuffer {
+    typealias SwiftType = ProfileMatch
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProfileMatch {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .none
+        
+        case 2: return .profile
+        
+        case 3: return .devices
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ProfileMatch, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .none:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .profile:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .devices:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileMatch_lift(_ buf: RustBuffer) throws -> ProfileMatch {
+    return try FfiConverterTypeProfileMatch.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileMatch_lower(_ value: ProfileMatch) -> RustBuffer {
+    return FfiConverterTypeProfileMatch.lower(value)
+}
+
+
+
+extension ProfileMatch: Equatable, Hashable {}
+
+
+
 
 /**
  * Every error the engine can report. Exposed to Swift/Kotlin as a flat error
@@ -3501,6 +3747,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeNetworkMatch: FfiConverterRustBuffer {
+    typealias SwiftType = NetworkMatch?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNetworkMatch.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNetworkMatch.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeSsdpInfo: FfiConverterRustBuffer {
     typealias SwiftType = SsdpInfo?
 
@@ -3725,6 +3995,31 @@ fileprivate struct FfiConverterSequenceTypeProfileSummary: FfiConverterRustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeSavedProfile: FfiConverterRustBuffer {
+    typealias SwiftType = [SavedProfile]
+
+    public static func write(_ value: [SavedProfile], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSavedProfile.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SavedProfile] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SavedProfile]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSavedProfile.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
     typealias SwiftType = [ServiceInfo]
 
@@ -3746,6 +4041,43 @@ fileprivate struct FfiConverterSequenceTypeServiceInfo: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringString: FfiConverterRustBuffer {
+    public static func write(_ value: [String: String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for (key, value) in value {
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterString.write(value, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: String] {
+        let len: Int32 = try readInt(&buf)
+        var dict = [String: String]()
+        dict.reserveCapacity(Int(len))
+        for _ in 0..<len {
+            let key = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterString.read(from: &buf)
+            dict[key] = value
+        }
+        return dict
+    }
+}
+/**
+ * The key a device's note is stored under: its MAC, or its IP when the
+ * MAC is unknown.
+ */
+public func deviceKey(host: Host) -> String {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_device_key(
+        FfiConverterTypeHost.lower(host),$0
+    )
+})
+}
 /**
  * Compare a profile (`baseline` up, `baseline_offline` off) with a new scan
  * (`current`).
@@ -3761,6 +4093,32 @@ public func diffHosts(baseline: [Host], baselineOffline: [Host], current: [Host]
         FfiConverterSequenceTypeHost.lower(baseline),
         FfiConverterSequenceTypeHost.lower(baselineOffline),
         FfiConverterSequenceTypeHost.lower(current),$0
+    )
+})
+}
+/**
+ * Whether a device matches `query` (case-insensitive substring): the fields
+ * the scan table's search looks at (IP, MAC, vendor, names) plus its `note`.
+ */
+public func hostMatches(host: Host, note: String?, query: String) -> Bool {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_host_matches(
+        FfiConverterTypeHost.lower(host),
+        FfiConverterOptionString.lower(note),
+        FfiConverterString.lower(query),$0
+    )
+})
+}
+/**
+ * Match `profile` against `query` (case-insensitive substring): its name and
+ * target, then each device as [`host_matches`] does. A blank query matches
+ * the whole profile.
+ */
+public func matchProfile(profile: SavedProfile, query: String) -> ProfileMatch {
+    return try!  FfiConverterTypeProfileMatch.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_match_profile(
+        FfiConverterTypeSavedProfile.lower(profile),
+        FfiConverterString.lower(query),$0
     )
 })
 }
@@ -3785,6 +4143,31 @@ public func openProfileStore(dir: String)throws  -> ProfileStore {
     )
 })
 }
+/**
+ * `profiles` as CSV text, devices up first, then those off, each by IP. A
+ * profile without devices still gets a row.
+ */
+public func profilesCsv(profiles: [SavedProfile]) -> String {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_profiles_csv(
+        FfiConverterSequenceTypeSavedProfile.lower(profiles),$0
+    )
+})
+}
+/**
+ * The profile the network of `current` belongs to, if one is recognized
+ * reliably. `gateway_ip` is the default gateway of the scanned network,
+ * when known.
+ */
+public func recognizeNetwork(current: [Host], gatewayIp: String?, profiles: [SavedProfile]) -> NetworkMatch? {
+    return try!  FfiConverterOptionTypeNetworkMatch.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_recognize_network(
+        FfiConverterSequenceTypeHost.lower(current),
+        FfiConverterOptionString.lower(gatewayIp),
+        FfiConverterSequenceTypeSavedProfile.lower(profiles),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -3801,13 +4184,28 @@ private var initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_netscout_core_checksum_func_device_key() != 45322) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_netscout_core_checksum_func_diff_hosts() != 45751) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_func_host_matches() != 38004) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_func_match_profile() != 63118) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_func_new_scanner() != 9395) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_func_open_profile_store() != 45667) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_func_profiles_csv() != 14775) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_func_recognize_network() != 11931) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_delete() != 27973) {
@@ -3819,10 +4217,16 @@ private var initializationResult: InitializationResult = {
     if (uniffi_netscout_core_checksum_method_profilestore_load() != 35914) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_netscout_core_checksum_method_profilestore_load_all() != 53975) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_netscout_core_checksum_method_profilestore_rename() != 32892) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_save() != 31247) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_set_notes() != 7465) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_update() != 58073) {

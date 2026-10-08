@@ -16,6 +16,8 @@ struct HostDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
                 if offline { wakeSection }
+                noteSection
+                deepScanSection
                 infoGrid
                 portsSection
             }
@@ -25,22 +27,32 @@ struct HostDetailView: View {
         .sheet(item: $connecting) { request in
             ConnectSheet(request: request)
         }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    model.deepScan(ip: host.ip)
-                } label: {
-                    if model.deepScanning.contains(host.ip) {
+    }
+
+    /// Re-scans this device alone, with what the button does spelled out.
+    private var deepScanSection: some View {
+        let running = model.deepScanning.contains(host.ip)
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                model.deepScan(ip: host.ip)
+            } label: {
+                if running {
+                    HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                    } else {
-                        Label(offline ? "Riscansiona" : "Scansione approfondita", systemImage: "scope")
+                        Text("Scansione in corso…")
                     }
+                } else {
+                    Label(offline ? "Riscansiona" : "Scansione approfondita", systemImage: "scope")
                 }
-                .help(offline
-                    ? "Riscansiona questo indirizzo per vedere se il dispositivo si è acceso"
-                    : "Riscansiona questo dispositivo con il profilo approfondito")
-                .disabled(model.deepScanning.contains(host.ip))
             }
+            .controlSize(.large)
+            .disabled(running)
+            Text(offline
+                ? "Cerca di nuovo questo indirizzo per vedere se il dispositivo si è acceso."
+                : "Riscansiona solo questo dispositivo con il profilo approfondito: più porte e più tempo per rispondere, per scoprire servizi sfuggiti alla scansione della rete.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -65,6 +77,41 @@ struct HostDetailView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(.orange.opacity(0.12), in: Capsule())
+            }
+        }
+    }
+
+    /// The device's note, in the profile the scan belongs to; the same note
+    /// as in the table's column.
+    @ViewBuilder
+    private var noteSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Nota").font(.headline)
+            if let id = model.scanNotesProfileID {
+                TextField("Nota", text: Binding(
+                    get: { model.note(profile: id, host: host) },
+                    set: { model.setNote($0, profile: id, host: host) }
+                ), prompt: Text("Scrivi una nota su questo dispositivo"), axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2...6)
+                if model.hasUnsavedNotes(profile: id) {
+                    UnsavedNotesBar(profile: id)
+                } else if let name = model.profiles.first(where: { $0.id == id })?.name {
+                    Text(model.note(profile: id, host: host).isEmpty
+                        ? "Andrà nel profilo «\(name)»."
+                        : "Salvata nel profilo «\(name)».")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            } else {
+                Text(model.hasFinishedScan
+                    ? "Per scrivere note, salva la scansione come profilo (barra laterale, «Salva come profilo…»)."
+                    : "Le note si potranno scrivere a scansione finita, salvandola come profilo.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
