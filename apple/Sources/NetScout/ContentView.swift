@@ -22,14 +22,6 @@ struct RootView: View {
                     }
                 }
                 .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 360)
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear
-                            .onAppear { model.sidebarWidth = geometry.size.width }
-                            .onChange(of: geometry.size.width) { model.sidebarWidth = $1 }
-                            .onDisappear { model.sidebarWidth = 0 }
-                    }
-                }
             } detail: {
                 Group {
                     switch model.selectedTab {
@@ -45,8 +37,8 @@ struct RootView: View {
                     DeviceCard()
                         .inspectorColumnWidth(min: 280, ideal: 320, max: 440)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        // The same backdrop as the sidebar (and, see
-                        // WindowTitle, in the toolbar above it too).
+                        // The same backdrop as the sidebar and, see
+                        // WindowTitle, the whole title bar.
                         .background { SidebarBackdrop().ignoresSafeArea() }
                         .background {
                             GeometryReader { geometry in
@@ -86,10 +78,7 @@ struct RootView: View {
             }
         }
         .hidingToolbarTitle()
-        .background(WindowTitle(
-            leadingSeparatorWidth: model.sidebarWidth,
-            trailingBackdropWidth: model.selectedTab == .scan && model.showDeviceCard ? model.deviceCardWidth : 0
-        ))
+        .background(WindowTitle())
         .background(WindowCloseGuard { UnsavedNotesPrompt.allowsClosing(model) })
         .sheet(item: $model.comparison) { comparison in
             ComparisonView(comparison: comparison)
@@ -157,16 +146,10 @@ extension NetworkMatch {
 /// and a label is laid over the title bar instead, hidden while the toolbar's
 /// controls would cover it in a narrow window.
 ///
-/// Over the device card, the title bar takes the sidebar's material, as it
-/// does over the sidebar, so the card's column has one colour top to bottom.
-/// Over the sidebar, the toolbar's bottom line (which the system draws only
-/// on hover there) is always drawn, as over the other columns.
+/// The title bar is one piece, the sidebar's material from edge to edge: no
+/// line along its bottom, no column dividers through it, and no darker band
+/// over the middle pane.
 private struct WindowTitle: NSViewRepresentable {
-    /// The sidebar's width, 0 when it is hidden.
-    let leadingSeparatorWidth: CGFloat
-    /// The device card's width, 0 when it is hidden.
-    let trailingBackdropWidth: CGFloat
-
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async { context.coordinator.install(in: view.window) }
@@ -174,13 +157,7 @@ private struct WindowTitle: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        let width = trailingBackdropWidth
-        let sidebar = leadingSeparatorWidth
-        DispatchQueue.main.async {
-            context.coordinator.install(in: nsView.window)
-            context.coordinator.setBackdropWidth(width)
-            context.coordinator.setSeparatorWidth(sidebar)
-        }
+        DispatchQueue.main.async { context.coordinator.install(in: nsView.window) }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -188,81 +165,45 @@ private struct WindowTitle: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject {
         private var label: NSTextField?
-        private var backdrop: NSView?
-        private var backdropWidth: NSLayoutConstraint?
-        private var separator: NSView?
-        private var separatorWidth: NSLayoutConstraint?
 
-        func setSeparatorWidth(_ width: CGFloat) {
-            guard let separator, let separatorWidth else { return }
-            separator.isHidden = width <= 0
-            if separatorWidth.constant != width { separatorWidth.constant = width }
-        }
-
-        /// A line along the title bar's bottom edge, from the leading end.
-        private func installSeparator(in titlebar: NSView) {
-            let line = NSBox()
-            line.boxType = .separator
-            line.translatesAutoresizingMaskIntoConstraints = false
-            titlebar.addSubview(line)
-            let width = line.widthAnchor.constraint(equalToConstant: 0)
-            NSLayoutConstraint.activate([
-                line.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
-                line.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
-                line.heightAnchor.constraint(equalToConstant: 1),
-                width,
-            ])
-            line.isHidden = true
-            separator = line
-            separatorWidth = width
-        }
-
-        func setBackdropWidth(_ width: CGFloat) {
-            guard let backdrop, let backdropWidth else { return }
-            backdrop.isHidden = width <= 0
-            if backdropWidth.constant != width { backdropWidth.constant = width }
-        }
-
-        /// The sidebar's material at the title bar's trailing end, below the
-        /// toolbar's controls, with the column's divider on its left.
+        /// The sidebar's material across the whole title bar, below the
+        /// toolbar's controls.
         private func installBackdrop(in titlebar: NSView) {
             let effect = NSVisualEffectView()
             effect.material = .sidebar
             effect.blendingMode = .behindWindow
             effect.state = .followsWindowActiveState
             effect.translatesAutoresizingMaskIntoConstraints = false
-            let divider = NSBox()
-            divider.boxType = .separator
-            divider.translatesAutoresizingMaskIntoConstraints = false
-            effect.addSubview(divider)
             let toolbarView = titlebar.subviews.first { String(describing: type(of: $0)) == "NSToolbarView" }
             titlebar.addSubview(effect, positioned: .below, relativeTo: toolbarView)
-            let width = effect.widthAnchor.constraint(equalToConstant: 0)
             NSLayoutConstraint.activate([
+                effect.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
                 effect.trailingAnchor.constraint(equalTo: titlebar.trailingAnchor),
                 effect.topAnchor.constraint(equalTo: titlebar.topAnchor),
                 effect.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
-                width,
-                divider.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
-                divider.topAnchor.constraint(equalTo: effect.topAnchor),
-                divider.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
-                divider.widthAnchor.constraint(equalToConstant: 1),
             ])
-            effect.isHidden = true
-            backdrop = effect
-            backdropWidth = width
+        }
+
+        /// The view the system draws the title bar's lines in (along the
+        /// bottom and through it at the sidebar's edge), above everything else.
+        private func hideDecorations(of titlebar: NSView) {
+            titlebar.superview?.subviews
+                .filter { String(describing: type(of: $0)) == "_NSTitlebarDecorationView" }
+                .forEach { $0.isHidden = true }
         }
 
         func install(in window: NSWindow?) {
             guard let window else { return }
             window.titleVisibility = .hidden
             if let label {
+                if let titlebar = label.superview { hideDecorations(of: titlebar) }
                 updateVisibility(label)
                 return
             }
             guard let titlebar = window.standardWindowButton(.closeButton)?.superview else { return }
+            window.titlebarSeparatorStyle = .none
             installBackdrop(in: titlebar)
-            installSeparator(in: titlebar)
+            hideDecorations(of: titlebar)
             let label = NSTextField(labelWithString: window.title.isEmpty ? "NetScout" : window.title)
             label.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
             label.textColor = .secondaryLabelColor

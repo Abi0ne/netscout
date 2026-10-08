@@ -48,8 +48,6 @@ final class ScanModel {
     /// search field above it takes the same width.
     var showDeviceCard = true
     var deviceCardWidth: CGFloat = 0
-    /// The sidebar's width, 0 while it is hidden.
-    var sidebarWidth: CGFloat = 0
     /// The scan tab's selected device and type filter (kept while the
     /// profiles tab is on screen).
     var scanSelection: String?
