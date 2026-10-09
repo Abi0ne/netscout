@@ -43,8 +43,8 @@ struct RootView: View {
                         .background {
                             GeometryReader { geometry in
                                 Color.clear
-                                    .onAppear { model.deviceCardWidth = geometry.size.width }
-                                    .onChange(of: geometry.size.width) { model.deviceCardWidth = $1 }
+                                    .onAppear { setDeviceCardWidth(geometry.size.width) }
+                                    .onChange(of: geometry.size.width) { setDeviceCardWidth($1) }
                             }
                         }
                 }
@@ -118,6 +118,17 @@ struct RootView: View {
     private var searchWidth: CGFloat {
         guard model.selectedTab == .scan, model.showDeviceCard, model.deviceCardWidth > 0 else { return 240 }
         return max(160, model.deviceCardWidth - Self.cardButtonWidth)
+    }
+
+    /// The card's width sizes the search field in the toolbar, which can move
+    /// the card again: written after the current layout pass, in whole points
+    /// and only on a real change, so the two never chase each other within one
+    /// pass (AppKit aborts after too many constraint passes in a row).
+    private func setDeviceCardWidth(_ width: CGFloat) {
+        let width = width.rounded()
+        DispatchQueue.main.async {
+            if abs(model.deviceCardWidth - width) >= 1 { model.deviceCardWidth = width }
+        }
     }
 
     /// The card button and the gaps around it.
