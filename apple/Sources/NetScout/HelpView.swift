@@ -79,7 +79,7 @@ struct HelpTopic: Identifiable {
     static let all: [HelpTopic] = [
         HelpTopic(title: "Panoramica", symbol: "info.circle", blocks: [
             .text("NetScout trova i dispositivi collegati alla tua rete locale e ti dice cosa sono: indirizzo IP, MAC, produttore, nome, tipo di dispositivo, latenza e porte aperte."),
-            .text("Funziona **senza privilegi di amministratore**: non serve la password né l'installazione di componenti aggiuntivi. La prima volta macOS può chiederti il permesso di accedere alla **rete locale**: va concesso, altrimenti la scansione non trova nulla."),
+            .text("Funziona **senza privilegi di amministratore**: non serve la password né l'installazione di componenti aggiuntivi (l'unica eccezione è la scansione di una VLAN taggata, che chiede la password per creare la sua interfaccia). La prima volta macOS può chiederti il permesso di accedere alla **rete locale**: va concesso, altrimenti la scansione non trova nulla."),
             .heading("La finestra"),
             .bullets([
                 "**Scansione** — la scheda principale: a sinistra i dispositivi trovati, divisi per tipo, e in fondo la rete da analizzare con il pulsante di avvio (se la finestra è bassa, questi controlli si stringono su due righe per lasciare spazio all'elenco); al centro la tabella dei dispositivi; a destra la scheda del dispositivo selezionato. Il pulsante in alto a sinistra mostra o nasconde la barra laterale, quello in alto a destra la scheda.",
@@ -106,6 +106,20 @@ struct HelpTopic: Identifiable {
                 "più destinazioni separate da virgola: `192.168.1.0/24, 10.0.0.5`",
             ]),
             .text("Premendo Invio nel campo la scansione parte subito."),
+            .heading("Una VLAN taggata sullo stesso cavo"),
+            .text("Se la porta dello switch a cui è collegato il Mac porta, oltre alla rete in access, anche una VLAN taggata, NetScout può scansionare entrambe insieme. Quando nel menu delle interfacce scegli una **porta Ethernet che può ricevere VLAN** (quella di un dock o di un adattatore, non il Wi‑Fi), sotto la destinazione compare **Anche una VLAN taggata su enN** (nel pannello compatto è il pulsante con l'etichetta accanto alla destinazione). Spuntala e indica:"),
+            .bullets([
+                "il **tag** della VLAN (da 1 a 4094);",
+                "come avere un indirizzo nella VLAN: **DHCP**, se nella VLAN c'è un server DHCP, oppure un indirizzo **fisso** libero, con il prefisso della rete (es. `172.20.20.250/24`).",
+            ]),
+            .text("Premendo **Avvia scansione** macOS chiede la **password di amministratore**: NetScout crea un'interfaccia VLAN (`vlan0`, …), le dà l'indirizzo e scansiona la rete della VLAN insieme alla destinazione. Sotto le opzioni vedi l'interfaccia attiva, il suo indirizzo e la rete."),
+            .bullets([
+                "L'interfaccia resta attiva dopo la scansione, così la scansione approfondita e le connessioni ai dispositivi della VLAN funzionano; le scansioni successive con le stesse impostazioni non chiedono di nuovo la password.",
+                "Viene rimossa quando premi **Disattiva**, togli la spunta, cambi le impostazioni o l'interfaccia, o chiudi NetScout (anche se si chiude in modo anomalo). Le impostazioni di rete del Mac non vengono toccate, e un riavvio la cancella comunque.",
+                "Con il DHCP NetScout tiene solo l'indirizzo: router e DNS della VLAN non vengono usati, così il traffico del Mac non cambia strada.",
+                "Se la rete della VLAN coincide con una che il Mac raggiunge già, NetScout non la attiva.",
+            ]),
+            .note("Serve una porta Ethernet: sul Wi‑Fi le VLAN taggate non arrivano. La porta dello switch deve essere configurata come trunk (o ibrida) con quella VLAN."),
             .heading("I profili di scansione"),
             .bullets([
                 "**Rapida** — controlla solo 7 porte comuni (SSH, DNS, web, condivisione file) con attese brevi: ideale per vedere in pochi secondi chi è acceso.",

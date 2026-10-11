@@ -12,9 +12,13 @@ import Observation
 final class ScanModel {
     var networks: [NetworkInfo] = []
     /// What to scan: a CIDR, an IP, a range ("192.168.1.10-50"), or a list.
-    var target = ""
+    var target = "" {
+        didSet { vlan.follow(interface: networks.first { $0.cidr == target }?.interface) }
+    }
     var profile: ScanProfile = .standard
     var errorMessage: String?
+    /// A tagged VLAN on the same cable, scanned along with `target`.
+    let vlan = TaggedVLAN()
 
     private(set) var hosts: [String: Host] = [:]
     /// Devices known from a saved profile but not found by this scan, keyed
@@ -108,6 +112,7 @@ final class ScanModel {
             if target.isEmpty, let net = Self.preferredNetwork(networks) {
                 target = net.cidr
             }
+            refreshVLANPorts()
         } catch {
             errorMessage = "Nessuna rete trovata: \(error)"
         }
@@ -149,6 +154,11 @@ final class ScanModel {
         let old = networks
         networks = current
         debugLog("networks changed: \(current.map { "\($0.interface) \($0.cidr)" })")
+        refreshVLANPorts()
+        // The VLAN interface coming and going is not news.
+        let changed = Set(old.map { "\($0.interface) \($0.cidr)" })
+            .symmetricDifference(current.map { "\($0.interface) \($0.cidr)" })
+        if !changed.isEmpty && changed.allSatisfy({ $0.hasPrefix("vlan") }) { return }
 
         let targetWasDetected = old.contains { $0.cidr == target }
         let targetGone = !current.contains { $0.cidr == target }
@@ -167,13 +177,39 @@ final class ScanModel {
         }
     }
 
+    /// Offer the VLAN when the scan's interface can carry one.
+    private func refreshVLANPorts() {
+        vlan.refreshCapable()
+        vlan.follow(interface: networks.first { $0.cidr == target }?.interface)
+    }
+
     func startScan() {
-        guard let scanner, !isScanning else { return }
+        guard scanner != nil, !isScanning, !vlan.isPreparing else { return }
         let trimmed = target.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
             errorMessage = "Indica cosa scansionare (es. 192.168.1.0/24)."
             return
         }
+        guard vlan.isOn else {
+            launchScan(trimmed)
+            return
+        }
+        // The VLAN's interface first (it may ask for the password).
+        errorMessage = nil
+        let others = networks.filter { $0.interface != vlan.active?.interface }
+        Task {
+            do {
+                let active = try await vlan.prepare(networks: others)
+                launchScan(trimmed, vlan: active.cidr)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func launchScan(_ trimmed: String, vlan vlanCIDR: String? = nil) {
+        guard let scanner, !isScanning else { return }
+        let targets = [trimmed] + (vlanCIDR.map { [$0] } ?? [])
         generation += 1
         let gen = generation
         pendingHosts = [:]
@@ -189,7 +225,7 @@ final class ScanModel {
         pendingComparisonID = nil
         recognitionBasis = -1
         suggestedThisScan = false
-        scannedTarget = trimmed
+        scannedTarget = targets.joined(separator: ", ")
         scannedProfile = profile
         let observer = ObserverBridge { [weak self] event in
             self?.apply(event, generation: gen)
@@ -198,7 +234,7 @@ final class ScanModel {
         do {
             try scanner.startScan(
                 config: ScanConfig(
-                    targets: [trimmed],
+                    targets: targets,
                     profile: profile,
                     concurrency: 64,
                     perHostConcurrency: 8,
@@ -207,7 +243,7 @@ final class ScanModel {
                 observer: observer
             )
             isScanning = true
-            debugLog("scan started: \(trimmed) \(profile)")
+            debugLog("scan started: \(targets) \(profile)")
         } catch {
             debugLog("scan failed to start: \(error)")
             errorMessage = "\(error)"

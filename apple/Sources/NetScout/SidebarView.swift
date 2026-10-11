@@ -8,6 +8,7 @@ struct SidebarView: View {
     @Environment(ScanModel.self) private var model
     @Binding var typeFilter: DeviceType?
     @ViewState private var savingName: String?
+    @ViewState private var showingVLAN = false
     /// The sidebar's height: the scan panel turns compact when it is short,
     /// to leave room for the list.
     @ViewState private var height: CGFloat = 0
@@ -179,6 +180,9 @@ struct SidebarView: View {
                 .labelsHidden()
             }
             targetField
+            if model.vlan.isAvailable {
+                VLANOptions(vlan: model.vlan)
+            }
             profilePicker
             scanButton
                 .controlSize(.large)
@@ -210,6 +214,9 @@ struct SidebarView: View {
                     .fixedSize()
                     .help("Scegli l'interfaccia di rete")
                 }
+                if model.vlan.isAvailable {
+                    vlanButton
+                }
             }
             HStack(spacing: 6) {
                 profilePicker
@@ -219,6 +226,24 @@ struct SidebarView: View {
             if let p = model.progress {
                 ProgressInfo(progress: p, running: model.isScanning, compact: true)
             }
+        }
+    }
+
+    /// The VLAN options in a popover, for the compact panel; filled when a
+    /// VLAN is scanned too.
+    private var vlanButton: some View {
+        Button {
+            showingVLAN.toggle()
+        } label: {
+            Image(systemName: model.vlan.isOn ? "tag.fill" : "tag")
+                .foregroundStyle(model.vlan.problem != nil ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+        }
+        .buttonStyle(.borderless)
+        .help(model.vlan.isOn ? "Scansiona anche la VLAN \(model.vlan.tag)" : "Scansiona anche una VLAN taggata")
+        .popover(isPresented: $showingVLAN, arrowEdge: .trailing) {
+            VLANOptions(vlan: model.vlan)
+                .padding(14)
+                .frame(width: 280)
         }
     }
 
@@ -255,19 +280,84 @@ struct SidebarView: View {
             model.isScanning ? model.cancel() : model.startScan()
         } label: {
             Label(
-                model.isScanning ? "Ferma" : (compact ? "Avvia" : "Avvia scansione"),
+                model.isScanning ? "Ferma"
+                    : model.vlan.isPreparing ? (compact ? "VLAN…" : "Attivazione VLAN…")
+                    : (compact ? "Avvia" : "Avvia scansione"),
                 systemImage: model.isScanning ? "stop.fill" : "play.fill"
             )
             .frame(maxWidth: compact ? nil : .infinity)
         }
         .buttonStyle(.borderedProminent)
         .tint(model.isScanning ? .red : .accentColor)
+        .disabled(model.vlan.isPreparing)
     }
 
     private var typeCounts: [(type: DeviceType, count: Int)] {
         let counts = Dictionary(grouping: model.hosts.values) { (h: Host) in h.deviceType }.mapValues(\.count)
         return DeviceType.allCases.compactMap { t in counts[t].map { (t, $0) } }
             .sorted { $0.count > $1.count }
+    }
+}
+
+/// "Also a tagged VLAN" on the scan's interface (shown only when it can
+/// carry VLANs): the switch and, when on, the tag and how the Mac gets an
+/// address in it.
+private struct VLANOptions: View {
+    @Bindable var vlan: TaggedVLAN
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Anche una VLAN taggata su \(vlan.parent ?? "")", isOn: $vlan.enabled)
+                .toggleStyle(.checkbox)
+                .help("Questa porta Ethernet può ricevere VLAN taggate: scansiona anche una di quelle che arrivano sullo stesso cavo")
+            if vlan.enabled {
+                HStack(spacing: 6) {
+                    TextField("Tag", text: $vlan.tag, prompt: Text("Tag"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 54)
+                        .help("ID della VLAN (1–4094)")
+                    Picker("Indirizzo", selection: $vlan.addressing) {
+                        Text("DHCP").tag(TaggedVLAN.Addressing.dhcp)
+                        Text("Fisso").tag(TaggedVLAN.Addressing.manual)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .help("Come ottenere un indirizzo nella VLAN: dal suo DHCP o uno fisso scritto qui")
+                }
+                if vlan.addressing == .manual {
+                    TextField("Indirizzo", text: $vlan.address, prompt: Text("172.20.20.250/24"))
+                        .textFieldStyle(.roundedBorder)
+                        .help("Un indirizzo libero nella VLAN, con il prefisso della sua rete")
+                }
+                status
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        if let problem = vlan.problem {
+            Text(problem).foregroundStyle(.orange)
+        } else if let active = vlan.active {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("\(active.interface) · \(active.ipv4) · rete \(active.cidr)")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+                Button("Disattiva") { vlan.deactivate() }
+                    .buttonStyle(.link)
+                    .help("Rimuovi l'interfaccia VLAN dal Mac")
+            }
+        } else if vlan.isPreparing {
+            Text(vlan.addressing == .dhcp ? "Creazione dell'interfaccia e richiesta al DHCP…" : "Creazione dell'interfaccia…")
+                .foregroundStyle(.secondary)
+        } else {
+            Text("All'avvio NetScout chiede la password di amministratore per creare l'interfaccia della VLAN; la rimuove quando la disattivi o chiudi l'app.")
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
