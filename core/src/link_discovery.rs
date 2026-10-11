@@ -10,14 +10,26 @@
 //!
 //! * **mDNS** — a multicast query from port 5353 for common service types.
 //!   Answers from port 5353 are multicast too (RFC 6762 §6), so they arrive
-//!   from any address; their A records give name and address.
+//!   from any address; their A records give name and address, and the
+//!   services' TXT records and instance names model and MAC (Synology and
+//!   QNAP NAS, printers, Chromecast, AirPlay, Linux machines running Avahi,
+//!   ESPHome, Cisco small-business switches).
 //! * **MikroTik MNDP** — the 4-byte request broadcast to UDP 5678, answered
 //!   on the same port: MAC, identity, board, address.
 //! * **Hikvision SADP** — an XML inquiry multicast to 239.255.255.250:37020,
 //!   answered by multicast: MAC, address, model.
+//! * **Dahua DHIP** — `DHDiscover.search` multicast to
+//!   239.255.255.251:37810, answered by multicast (Dahua and its OEMs:
+//!   Amcrest, Lorex, …): MAC, address, model.
 //! * **Ubiquiti discovery** — the v1 request broadcast to UDP 10001: MAC,
-//!   address, name, model. The answer is unicast, so it only arrives from
-//!   devices that can route back to this machine.
+//!   address, name, model.
+//! * **ONVIF WS-Discovery** — a SOAP probe multicast to
+//!   239.255.255.250:3702, which nearly every IP camera and recorder answers
+//!   (Axis, Hanwha, Uniview, Reolink, …): address, model, name.
+//!
+//! Ubiquiti and ONVIF answer by unicast, so those answers only arrive from
+//! devices that can route back to this machine: they mostly add model and
+//! MAC to devices of the scanned network.
 //!
 //! Each interface gets its own sockets, bound to it, so the broadcasts leave
 //! on every link (not only the one of the default route). Hosts answer with
@@ -42,9 +54,15 @@ const MNDP_PORT: u16 = 5678;
 const SADP_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
 const SADP_PORT: u16 = 37020;
 const UBNT_PORT: u16 = 10001;
+const DHIP_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 251);
+const DHIP_PORT: u16 = 37810;
+const WSD_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 255, 250);
+const WSD_PORT: u16 = 3702;
 
 const DNS_TYPE_A: u16 = 1;
 const DNS_TYPE_PTR: u16 = 12;
+const DNS_TYPE_TXT: u16 = 16;
+const DNS_TYPE_SRV: u16 = 33;
 
 /// Service types asked over mDNS: what computers, printers, NAS, speakers,
 /// TVs, cameras and smart-home devices advertise.
@@ -69,7 +87,17 @@ const SERVICE_TYPES: &[&str] = &[
     "_spotify-connect._tcp",
     "_axis-video._tcp",
     "_rtsp._tcp",
+    "_ipps._tcp",
+    "_qdiscover._tcp",
+    "_csco-sb._tcp",
+    "_esphomelib._tcp",
+    "_home-assistant._tcp",
 ];
+
+/// TXT keys holding a device's model, by preference.
+const MODEL_KEYS: &[&str] = &["model", "displayModel", "md", "ty", "usb_MDL", "am", "product", "board"];
+/// TXT keys holding a device's MAC ("deviceid" is AirPlay's).
+const MAC_KEYS: &[&str] = &["mac_address", "macaddress", "mac", "deviceid"];
 
 /// A network interface of this machine to ask on.
 #[derive(Debug, Clone)]
@@ -117,6 +145,10 @@ pub async fn discover(links: &[Link], wait: Duration) -> Vec<Found> {
         tasks.spawn(async move { sadp(&l, wait).await });
         let l = link.clone();
         tasks.spawn(async move { ubnt(&l, wait).await });
+        let l = link.clone();
+        tasks.spawn(async move { dhip(&l, wait).await });
+        let l = link.clone();
+        tasks.spawn(async move { onvif(&l, wait).await });
     }
     let mut by_ip: HashMap<Ipv4Addr, Found> = HashMap::new();
     while let Some(done) = tasks.join_next().await {
@@ -268,12 +300,18 @@ fn mdns_query() -> Vec<u8> {
     q
 }
 
-/// The A records of an mDNS response, in any section: name and address.
+/// What an mDNS response says, in any section: name and address from the
+/// A records; model and MAC from the TXT records and instance names of the
+/// services whose SRV record points at one of those addresses.
 fn mdns_hosts(msg: &[u8]) -> Vec<Found> {
     let mut found = Vec::new();
     if msg.len() < 12 || msg[2] & 0x80 == 0 {
         return found; // not a response
     }
+    // Owner names, lowercased: host → address, instance → host, instance → TXT.
+    let mut addresses: HashMap<String, Ipv4Addr> = HashMap::new();
+    let mut targets: Vec<(String, String)> = Vec::new();
+    let mut txts: HashMap<String, Vec<String>> = HashMap::new();
     let count = |i: usize| u16::from_be_bytes([msg[i], msg[i + 1]]) as usize;
     let (qd, records) = (count(4), count(6) + count(8) + count(10));
     let mut off = 12;
@@ -287,17 +325,79 @@ fn mdns_hosts(msg: &[u8]) -> Vec<Found> {
         let rtype = u16::from_be_bytes([rr[0], rr[1]]);
         let rdlen = u16::from_be_bytes([rr[8], rr[9]]) as usize;
         let rdata = name_end + 10;
-        if rtype == DNS_TYPE_A && rdlen == 4 {
-            if let (Some(name), Some(a)) = (names::read_name(msg, off), msg.get(rdata..rdata + 4)) {
-                let ip = Ipv4Addr::new(a[0], a[1], a[2], a[3]);
-                let mut f = Found::new(ip);
-                f.name = meaningful_name(&name, ip);
-                found.push(f);
+        let owner = names::read_name(msg, off);
+        match (rtype, owner) {
+            (DNS_TYPE_A, Some(name)) if rdlen == 4 => {
+                if let Some(a) = msg.get(rdata..rdata + 4) {
+                    let ip = Ipv4Addr::new(a[0], a[1], a[2], a[3]);
+                    let mut f = Found::new(ip);
+                    f.name = meaningful_name(&name, ip);
+                    found.push(f);
+                    addresses.insert(name.to_ascii_lowercase(), ip);
+                }
             }
+            // SRV: priority, weight, port, then the target host.
+            (DNS_TYPE_SRV, Some(instance)) if rdlen > 6 => {
+                if let Some(host) = names::read_name(msg, rdata + 6) {
+                    targets.push((instance, host.to_ascii_lowercase()));
+                }
+            }
+            (DNS_TYPE_TXT, Some(instance)) => {
+                if let Some(data) = msg.get(rdata..rdata + rdlen) {
+                    txts.insert(instance.to_ascii_lowercase(), txt_strings(data));
+                }
+            }
+            _ => {}
         }
         off = rdata + rdlen;
     }
+    for (instance, host) in targets {
+        let Some(&ip) = addresses.get(&host) else { continue };
+        let txt = txts.get(&instance.to_ascii_lowercase()).map(Vec::as_slice).unwrap_or_default();
+        let mut f = Found::new(ip);
+        f.model = MODEL_KEYS.iter().filter_map(|k| txt_value(txt, k)).find(|v| plausible_model(v));
+        f.mac = MAC_KEYS
+            .iter()
+            .filter_map(|k| txt_value(txt, k))
+            .find_map(|v| parse_mac(v.split(['|', ',']).next().unwrap_or_default()))
+            .or_else(|| bracketed_mac(&instance));
+        if f.model.is_some() || f.mac.is_some() {
+            found.push(f);
+        }
+    }
     found
+}
+
+/// The length-prefixed strings of a TXT record.
+fn txt_strings(mut data: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Some((&len, rest)) = data.split_first() {
+        let Some(s) = rest.get(..len as usize) else { break };
+        out.push(String::from_utf8_lossy(s).into_owned());
+        data = &rest[len as usize..];
+    }
+    out
+}
+
+/// The value of `key=…` in TXT strings (keys are case-insensitive).
+fn txt_value(txt: &[String], key: &str) -> Option<String> {
+    txt.iter().find_map(|s| {
+        let (k, v) = s.split_once('=')?;
+        k.eq_ignore_ascii_case(key).then(|| v.trim().to_string()).filter(|v| !v.is_empty())
+    })
+}
+
+/// Not a model: AirPlay's `md` lists metadata types ("0,1,2"), and Samba
+/// announces every server as an "Xserve".
+fn plausible_model(value: &str) -> bool {
+    value.chars().any(|c| c.is_ascii_alphabetic()) && !value.eq_ignore_ascii_case("Xserve")
+}
+
+/// The MAC Avahi puts in workstation instance names: "nas [00:11:32:aa:bb:cc]".
+fn bracketed_mac(instance: &str) -> Option<String> {
+    let start = instance.find('[')? + 1;
+    let end = start + instance[start..].find(']')?;
+    parse_mac(&instance[start..end])
 }
 
 /// `name` without the trailing dot, unless it says nothing: the address
@@ -409,13 +509,26 @@ fn parse_sadp(msg: &[u8]) -> Option<Found> {
     Some(f)
 }
 
-/// The text of the first `<tag>…</tag>`, trimmed; `None` if empty.
+/// The text of the first element named `tag`, with or without a namespace
+/// prefix (`<XAddrs>`, `<d:XAddrs …>`), trimmed; `None` if empty.
 fn xml_tag(xml: &str, tag: &str) -> Option<String> {
-    let open = format!("<{tag}>");
-    let start = xml.find(&open)? + open.len();
-    let end = start + xml[start..].find(&format!("</{tag}>"))?;
-    let value = xml[start..end].trim();
-    (!value.is_empty()).then(|| value.to_string())
+    let mut from = 0;
+    while let Some(i) = xml[from..].find(tag) {
+        let at = from + i;
+        from = at + tag.len();
+        let lt = xml[..at].rfind('<')?;
+        let prefix = &xml[lt + 1..at];
+        let opening = prefix.is_empty()
+            || (prefix.ends_with(':') && prefix[..prefix.len() - 1].chars().all(|c| c.is_ascii_alphanumeric()));
+        if !opening || !xml[from..].starts_with(['>', ' ']) {
+            continue;
+        }
+        let start = from + xml[from..].find('>')? + 1;
+        let end = start + xml[start..].find("</")?;
+        let value = xml[start..end].trim();
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -468,19 +581,162 @@ fn parse_ubnt(from: Ipv4Addr, msg: &[u8]) -> Option<Found> {
 }
 
 // ---------------------------------------------------------------------------
+// Dahua DHIP
+// ---------------------------------------------------------------------------
+
+async fn dhip(link: &Link, wait: Duration) -> Vec<Found> {
+    let Some(socket) = link_socket(link, DHIP_PORT, Some(DHIP_GROUP)) else {
+        return Vec::new();
+    };
+    let to = SocketAddrV4::new(DHIP_GROUP, DHIP_PORT);
+    ask(&socket, &dhip_search(), to, wait, |_, msg| parse_dhip(msg).into_iter().collect()).await
+}
+
+/// A DHIP request: the 32-byte header ("DHIP", body length twice, little
+/// endian), then the JSON body.
+fn dhip_search() -> Vec<u8> {
+    let body = br#"{"method":"DHDiscover.search","params":{"mac":"","uni":1}}"#;
+    let len = (body.len() as u32).to_le_bytes();
+    let mut m = vec![0x20, 0, 0, 0];
+    m.extend(b"DHIP");
+    m.extend([0; 8]); // session and request id
+    m.extend(len);
+    m.extend([0; 4]);
+    m.extend(len);
+    m.extend([0; 4]);
+    m.extend(body);
+    m
+}
+
+/// A `DHDiscover` answer: the JSON after the header, with the device's
+/// address, MAC and model somewhere in `params.deviceInfo`.
+fn parse_dhip(msg: &[u8]) -> Option<Found> {
+    let json = &msg[msg.iter().position(|&b| b == b'{')?..];
+    let value: serde_json::Value = serde_json::Deserializer::from_slice(json)
+        .into_iter()
+        .next()?
+        .ok()?;
+    let info = json_find(&value, "deviceInfo")?;
+    let ip: Ipv4Addr = json_find(info, "IPAddress")?.as_str()?.parse().ok()?;
+    let mut f = Found::new(ip);
+    f.mac = json_find(info, "Mac").and_then(|m| parse_mac(m.as_str()?));
+    f.model = json_find(info, "DeviceType").and_then(|m| text(m.as_str()?.as_bytes()));
+    f.name = json_find(info, "MachineName").and_then(|m| text(m.as_str()?.as_bytes()));
+    // Dahua models: IPC… and SD… cameras; NVR/XVR/DVR/HCVR recorders.
+    f.kind = match f.model.as_deref().map(str::to_ascii_uppercase) {
+        Some(m) if ["NVR", "XVR", "DVR", "HCVR"].iter().any(|p| m.contains(p)) => Some(DeviceType::Nvr),
+        Some(m) if m.contains("IPC") || m.starts_with("SD") || m.contains("-SD") => Some(DeviceType::Camera),
+        _ => None,
+    };
+    Some(f)
+}
+
+/// The first value under `key` (case-insensitive) anywhere in `v`.
+fn json_find<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    match v {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v)
+            .or_else(|| map.values().find_map(|v| json_find(v, key))),
+        serde_json::Value::Array(items) => items.iter().find_map(|v| json_find(v, key)),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ONVIF WS-Discovery
+// ---------------------------------------------------------------------------
+
+async fn onvif(link: &Link, wait: Duration) -> Vec<Found> {
+    let Some(socket) = link_socket(link, 0, Some(WSD_GROUP)) else {
+        return Vec::new();
+    };
+    let probe = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+         <e:Envelope xmlns:e=\"http://www.w3.org/2003/05/soap-envelope\" \
+         xmlns:w=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\" \
+         xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\" \
+         xmlns:dn=\"http://www.onvif.org/ver10/network/wsdl\">\
+         <e:Header><w:MessageID>uuid:{}</w:MessageID>\
+         <w:To e:mustUnderstand=\"true\">urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>\
+         <w:Action e:mustUnderstand=\"true\">http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action>\
+         </e:Header><e:Body><d:Probe><d:Types>dn:NetworkVideoTransmitter</d:Types></d:Probe></e:Body></e:Envelope>",
+        probe_uuid().to_ascii_lowercase()
+    );
+    let to = SocketAddrV4::new(WSD_GROUP, WSD_PORT);
+    ask(&socket, probe.as_bytes(), to, wait, |from, msg| {
+        parse_onvif(from, msg).into_iter().collect()
+    })
+    .await
+}
+
+/// A WS-Discovery `ProbeMatch`: the address from `XAddrs`, model and name
+/// from the ONVIF scopes (`onvif://www.onvif.org/hardware/…`, `…/name/…`).
+fn parse_onvif(from: Ipv4Addr, msg: &[u8]) -> Option<Found> {
+    let xml = std::str::from_utf8(msg).ok()?;
+    if !xml.contains("ProbeMatch") {
+        return None; // a probe
+    }
+    let ip = xml_tag(xml, "XAddrs")
+        .and_then(|x| {
+            x.split_whitespace().find_map(|url| {
+                let host = url.split("://").nth(1)?.split(['/', ':']).next()?;
+                host.parse::<Ipv4Addr>().ok()
+            })
+        })
+        .unwrap_or(from);
+    let scopes = xml_tag(xml, "Scopes").unwrap_or_default();
+    let scope = |kind: &str| {
+        scopes.split_whitespace().find_map(|s| {
+            let value = s.strip_prefix(&format!("onvif://www.onvif.org/{kind}/"))?;
+            text(percent_decode(value).as_bytes())
+        })
+    };
+    let mut f = Found::new(ip);
+    f.model = scope("hardware");
+    // The name scope often just repeats the model.
+    f.name = scope("name").filter(|n| Some(n) != f.model.as_ref());
+    f.mac = scope("MAC").and_then(|m| parse_mac(&m));
+    f.kind = Some(DeviceType::Camera);
+    Some(f)
+}
+
+/// Decode `%XX` escapes (ONVIF scopes are URIs).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            if let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// ---------------------------------------------------------------------------
 
 fn format_mac(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(":")
 }
 
-/// "44-19-B6-01-02-03" or "44:19:b6:01:02:03" → "44:19:b6:01:02:03".
+/// "44-19-B6-01-02-03" or "44:19:b6:01:02:03" → "44:19:b6:01:02:03";
+/// `None` for anything but a device's own (unicast, non-zero) MAC.
 fn parse_mac(text: &str) -> Option<String> {
     let parts: Vec<u8> = text
         .split(['-', ':'])
         .map(|p| u8::from_str_radix(p, 16))
         .collect::<Result<_, _>>()
         .ok()?;
-    (parts.len() == 6).then(|| format_mac(&parts))
+    let real = parts.len() == 6 && parts[..3] != [0, 0, 0] && parts[0] & 0x01 == 0;
+    real.then(|| format_mac(&parts))
 }
 
 /// A printable string value, trimmed of NULs and spaces; `None` if empty.
@@ -596,6 +852,90 @@ mod tests {
         assert_eq!(f.name.as_deref(), Some("UAP-AC-Lite"));
         assert_eq!(f.model.as_deref(), Some("U7LT"));
         assert!(parse_ubnt(Ipv4Addr::new(10, 0, 0, 9), &[1, 0, 0, 0]).is_none());
+    }
+
+    /// A service answer: PTR, then SRV, TXT and A in the additional section.
+    #[test]
+    fn mdns_txt_gives_model_and_mac() {
+        fn name(m: &mut Vec<u8>, labels: &[&str]) {
+            for l in labels {
+                m.push(l.len() as u8);
+                m.extend(l.as_bytes());
+            }
+            m.push(0);
+        }
+        let mut m = vec![0, 0, 0x84, 0, 0, 0, 0, 0, 0, 0, 0, 3];
+        let instance = ["DiskStation", "_http", "_tcp", "local"];
+        // SRV → ds.local
+        name(&mut m, &instance);
+        let mut srv = vec![0, 0, 0, 0, 0x13, 0x88];
+        name(&mut srv, &["ds", "local"]);
+        m.extend([0, 33, 0x80, 1, 0, 0, 0, 120, 0, srv.len() as u8]);
+        m.extend(&srv);
+        // TXT
+        name(&mut m, &instance);
+        let mut txt = Vec::new();
+        for s in ["vendor=Synology", "model=DS918+", "mac_address=00:11:32:aa:bb:cc|00:11:32:aa:bb:cd"] {
+            txt.push(s.len() as u8);
+            txt.extend(s.as_bytes());
+        }
+        m.extend([0, 16, 0x80, 1, 0, 0, 0, 120, 0, txt.len() as u8]);
+        m.extend(&txt);
+        // A
+        name(&mut m, &["ds", "local"]);
+        m.extend([0, 1, 0x80, 1, 0, 0, 0, 120, 0, 4, 192, 168, 0, 10]);
+        let found = mdns_hosts(&m);
+        let rich = found.iter().find(|f| f.model.is_some()).unwrap();
+        assert_eq!(rich.ip, Ipv4Addr::new(192, 168, 0, 10));
+        assert_eq!(rich.model.as_deref(), Some("DS918+"));
+        assert_eq!(rich.mac.as_deref(), Some("00:11:32:aa:bb:cc"));
+        assert!(found.iter().any(|f| f.name.as_deref() == Some("ds.local")));
+    }
+
+    #[test]
+    fn junk_models_and_macs_are_dropped() {
+        assert!(!plausible_model("0,1,2"));
+        assert!(!plausible_model("Xserve"));
+        assert!(plausible_model("AppleTV3,1"));
+        assert_eq!(parse_mac("00:00:00:00:05:09"), None);
+        assert_eq!(parse_mac("ff:ff:ff:ff:ff:ff"), None);
+        assert_eq!(parse_mac("EC-0D-E4-D4-2A-90").as_deref(), Some("ec:0d:e4:d4:2a:90"));
+    }
+
+    #[test]
+    fn avahi_instance_names_carry_the_mac() {
+        assert_eq!(bracketed_mac("nas [00:11:32:AA:BB:CC]._workstation._tcp.local").as_deref(), Some("00:11:32:aa:bb:cc"));
+        assert_eq!(bracketed_mac("printer._ipp._tcp.local"), None);
+    }
+
+    #[test]
+    fn dhip_answer() {
+        let body = br#"{"mac":"","method":"client.notifyDevInfo","params":{"deviceInfo":{"DeviceType":"IPC-HFW2431S-S-S2","IPv4Address":{"IPAddress":"192.168.1.108","SubnetMask":"255.255.255.0"},"Mac":"3c:ef:8c:01:02:03","MachineName":"cam-ingresso"}}}"#;
+        let mut m = dhip_search()[..32].to_vec();
+        m.extend(body);
+        let f = parse_dhip(&m).unwrap();
+        assert_eq!(f.ip, Ipv4Addr::new(192, 168, 1, 108));
+        assert_eq!(f.mac.as_deref(), Some("3c:ef:8c:01:02:03"));
+        assert_eq!(f.model.as_deref(), Some("IPC-HFW2431S-S-S2"));
+        assert_eq!(f.name.as_deref(), Some("cam-ingresso"));
+        assert_eq!(f.kind, Some(DeviceType::Camera));
+        assert!(parse_dhip(&dhip_search()).is_none());
+    }
+
+    #[test]
+    fn onvif_probe_match() {
+        let xml = "<?xml version=\"1.0\"?><SOAP-ENV:Envelope><SOAP-ENV:Body><wsdd:ProbeMatches><wsdd:ProbeMatch>\
+                   <wsdd:Types>dn:NetworkVideoTransmitter</wsdd:Types>\
+                   <wsdd:Scopes>onvif://www.onvif.org/type/video_encoder onvif://www.onvif.org/hardware/M3046-V \
+                   onvif://www.onvif.org/name/AXIS%20M3046-V</wsdd:Scopes>\
+                   <wsdd:XAddrs>http://169.254.12.7/onvif/device_service http://[fe80::1]/onvif/device_service</wsdd:XAddrs>\
+                   </wsdd:ProbeMatch></wsdd:ProbeMatches></SOAP-ENV:Body></SOAP-ENV:Envelope>";
+        let f = parse_onvif(Ipv4Addr::new(10, 0, 0, 1), xml.as_bytes()).unwrap();
+        assert_eq!(f.ip, Ipv4Addr::new(169, 254, 12, 7));
+        assert_eq!(f.model.as_deref(), Some("M3046-V"));
+        assert_eq!(f.name.as_deref(), Some("AXIS M3046-V"));
+        assert_eq!(f.kind, Some(DeviceType::Camera));
+        assert!(parse_onvif(Ipv4Addr::new(10, 0, 0, 1), b"<e:Envelope><d:Probe/></e:Envelope>").is_none());
     }
 
     #[test]
