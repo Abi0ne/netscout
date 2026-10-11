@@ -38,6 +38,7 @@ mod engine;
 pub mod error;
 pub mod export;
 pub mod icmp;
+pub mod link_discovery;
 pub mod liveness;
 pub mod names;
 pub mod oui;

@@ -90,7 +90,8 @@ final class ScanModel {
             scanner = try newScanner()
             detectNetworks()
             watchNetworks()
-            // `NetScout --scan` starts scanning right away (handy for testing).
+            // `NetScout --scan [--deep]` starts scanning right away (handy for testing).
+            if CommandLine.arguments.contains("--deep") { profile = .deep }
             if CommandLine.arguments.contains("--scan") {
                 startScan()
             }

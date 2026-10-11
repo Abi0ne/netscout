@@ -220,6 +220,11 @@ struct HostTableView: View {
                 Label("Spento", systemImage: "power")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.orange)
+            } else if row.host.offSubnet {
+                Label("Fuori rete", systemImage: "cable.connector")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.purple)
+                    .help("Sullo stesso cavo, ma con un indirizzo di un'altra rete: il Mac non lo raggiunge")
             } else {
                 Text(row.latencyText)
                     .monospacedDigit()

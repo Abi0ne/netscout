@@ -209,13 +209,15 @@ impl Scanner {
                 "'{ip}' is not an IPv4 address"
             )));
         }
-        let job = engine::plan(&ScanConfig {
+        let mut job = engine::plan(&ScanConfig {
             targets: vec![ip.to_string()],
             profile: ScanProfile::Deep,
             concurrency: 1,
             per_host_concurrency: 16,
             timeout_ms: 0,
         })?;
+        // One device: the others on the link are not wanted here.
+        job.link_discovery = false;
         self.launch(job, observer)
     }
 }

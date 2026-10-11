@@ -207,7 +207,7 @@ fn parse_mdns_ptr(msg: &[u8]) -> Option<String> {
 }
 
 /// Offset just past the (possibly compressed) name starting at `off`.
-fn skip_name(msg: &[u8], mut off: usize) -> Option<usize> {
+pub(crate) fn skip_name(msg: &[u8], mut off: usize) -> Option<usize> {
     loop {
         let len = *msg.get(off)?;
         match len {
@@ -219,7 +219,7 @@ fn skip_name(msg: &[u8], mut off: usize) -> Option<usize> {
 }
 
 /// Decode the (possibly compressed) name at `off`, dot-separated.
-fn read_name(msg: &[u8], mut off: usize) -> Option<String> {
+pub(crate) fn read_name(msg: &[u8], mut off: usize) -> Option<String> {
     let mut labels: Vec<String> = Vec::new();
     // Bound pointer chasing so a malicious loop cannot spin forever.
     for _ in 0..64 {

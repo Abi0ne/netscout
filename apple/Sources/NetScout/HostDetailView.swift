@@ -16,10 +16,11 @@ struct HostDetailView: View {
             VStack(alignment: .leading, spacing: 20) {
                 header
                 if offline { wakeSection }
+                if host.offSubnet && !offline { offSubnetSection }
                 noteSection
-                deepScanSection
+                if !host.offSubnet { deepScanSection }
                 infoGrid
-                portsSection
+                if !host.offSubnet { portsSection }
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,6 +78,13 @@ struct HostDetailView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(.orange.opacity(0.12), in: Capsule())
+            } else if host.offSubnet {
+                Label("Fuori rete", systemImage: "cable.connector")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.purple)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.purple.opacity(0.12), in: Capsule())
             }
         }
     }
@@ -116,6 +124,13 @@ struct HostDetailView: View {
         }
     }
 
+    /// A device on the same cable with an address of another network.
+    private var offSubnetSection: some View {
+        Text("Trovato sullo stesso cavo, ma con un indirizzo che non appartiene a nessuna rete del Mac: ha risposto alle richieste di rilevamento (Bonjour o il protocollo del produttore), però il Mac non può raggiungerlo, quindi niente ping, porte o connessioni. Per gestirlo, cambiagli l'indirizzo con lo strumento del produttore o dai al Mac un indirizzo nella sua rete.")
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var wakeSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Non trovato in questa scansione: è spento o non è più in rete.")
@@ -129,11 +144,14 @@ struct HostDetailView: View {
             row("Indirizzo IP", host.ip, monospaced: true)
             row("MAC", host.mac ?? "—", monospaced: true)
             row("Produttore", host.vendor ?? macNote)
+            if let model = host.model {
+                row("Modello", model)
+            }
             row("Nomi", host.hostnames.isEmpty ? "—" : host.hostnames.joined(separator: "\n"))
             if offline {
                 row("Visto l'ultima volta", Date(timeIntervalSince1970: Double(host.lastSeen) / 1000)
                     .formatted(date: .abbreviated, time: .shortened))
-            } else {
+            } else if !host.offSubnet {
                 row("Latenza", host.rttMs.map { String(format: "%.2f ms", $0) } ?? "Non risponde al ping")
                 row("Visto alle", Date(timeIntervalSince1970: Double(host.lastSeen) / 1000)
                     .formatted(date: .omitted, time: .standard))

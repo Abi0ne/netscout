@@ -1150,6 +1150,16 @@ public struct Host {
      * Epoch ms of the most recent successful probe.
      */
     public var lastSeen: Int64
+    /**
+     * Seen only by link-level discovery (deep profile), with an address
+     * outside every network of this machine: on the same cable, but it
+     * cannot be pinged, probed or connected to from here.
+     */
+    public var offSubnet: Bool
+    /**
+     * Model the device reported about itself (link-level discovery).
+     */
+    public var model: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1171,7 +1181,15 @@ public struct Host {
          */firstSeen: Int64, 
         /**
          * Epoch ms of the most recent successful probe.
-         */lastSeen: Int64) {
+         */lastSeen: Int64, 
+        /**
+         * Seen only by link-level discovery (deep profile), with an address
+         * outside every network of this machine: on the same cable, but it
+         * cannot be pinged, probed or connected to from here.
+         */offSubnet: Bool, 
+        /**
+         * Model the device reported about itself (link-level discovery).
+         */model: String?) {
         self.ip = ip
         self.mac = mac
         self.vendor = vendor
@@ -1183,6 +1201,8 @@ public struct Host {
         self.ssdpInfo = ssdpInfo
         self.firstSeen = firstSeen
         self.lastSeen = lastSeen
+        self.offSubnet = offSubnet
+        self.model = model
     }
 }
 
@@ -1223,6 +1243,12 @@ extension Host: Equatable, Hashable {
         if lhs.lastSeen != rhs.lastSeen {
             return false
         }
+        if lhs.offSubnet != rhs.offSubnet {
+            return false
+        }
+        if lhs.model != rhs.model {
+            return false
+        }
         return true
     }
 
@@ -1238,6 +1264,8 @@ extension Host: Equatable, Hashable {
         hasher.combine(ssdpInfo)
         hasher.combine(firstSeen)
         hasher.combine(lastSeen)
+        hasher.combine(offSubnet)
+        hasher.combine(model)
     }
 }
 
@@ -1259,7 +1287,9 @@ public struct FfiConverterTypeHost: FfiConverterRustBuffer {
                 mdnsServices: FfiConverterSequenceTypeServiceInfo.read(from: &buf), 
                 ssdpInfo: FfiConverterOptionTypeSsdpInfo.read(from: &buf), 
                 firstSeen: FfiConverterInt64.read(from: &buf), 
-                lastSeen: FfiConverterInt64.read(from: &buf)
+                lastSeen: FfiConverterInt64.read(from: &buf), 
+                offSubnet: FfiConverterBool.read(from: &buf), 
+                model: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1275,6 +1305,8 @@ public struct FfiConverterTypeHost: FfiConverterRustBuffer {
         FfiConverterOptionTypeSsdpInfo.write(value.ssdpInfo, into: &buf)
         FfiConverterInt64.write(value.firstSeen, into: &buf)
         FfiConverterInt64.write(value.lastSeen, into: &buf)
+        FfiConverterBool.write(value.offSubnet, into: &buf)
+        FfiConverterOptionString.write(value.model, into: &buf)
     }
 }
 

@@ -127,6 +127,14 @@ pub struct Host {
     pub first_seen: i64,
     /// Epoch ms of the most recent successful probe.
     pub last_seen: i64,
+    /// Seen only by link-level discovery (deep profile), with an address
+    /// outside every network of this machine: on the same cable, but it
+    /// cannot be pinged, probed or connected to from here.
+    #[serde(default)]
+    pub off_subnet: bool,
+    /// Model the device reported about itself (link-level discovery).
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A scannable network, as derived from a single interface.

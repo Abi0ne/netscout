@@ -242,6 +242,8 @@ mod tests {
             ssdp_info: None,
             first_seen: 0,
             last_seen: 0,
+            off_subnet: false,
+            model: None,
         };
         let mut notes = HashMap::new();
         notes.insert(

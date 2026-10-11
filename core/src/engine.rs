@@ -19,11 +19,17 @@
 //!    window, and a longer one lets TCP retransmit the SYN. Only up hosts are
 //!    retried, so the sweep keeps its pace. Hosts that get a name or a port
 //!    are re-emitted.
-//!    With the deep profile, names that cross subnets come next, from the
-//!    ports now known (see `deep_names`): DNS asked directly, SMB, and TLS
+//!    With the deep profile, link-level discovery runs alongside (see
+//!    `link_discovery`): devices on the same cable answer multicast and
+//!    broadcast queries whatever their address. They enrich the hosts found
+//!    (MAC, name, model), fill in silent in-target ones, and devices whose
+//!    address is outside every network of this machine are added, marked
+//!    `off_subnet`. Names that cross subnets come next, from the ports now
+//!    known (see `deep_names`): DNS asked directly, SMB, and TLS
 //!    certificates.
 //! 5. **Classify** — each host's device type from the evidence gathered
-//!    (see `classify`); hosts whose type is now known are re-emitted.
+//!    (see `classify`), else what its link-level answer said it is; hosts
+//!    whose type is now known are re-emitted.
 //! 6. **Finish** — `on_finished` with the summary. A cancelled scan stops at
 //!    the next await point and emits nothing further.
 
@@ -33,6 +39,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ipnet::Ipv4Net;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -41,6 +48,7 @@ use crate::classify;
 use crate::deep_names;
 use crate::error::ScanError;
 use crate::icmp::{self, PingClient};
+use crate::link_discovery;
 use crate::names;
 use crate::oui;
 use crate::platform;
@@ -61,6 +69,8 @@ const PROGRESS_EVERY: Duration = Duration::from_millis(150);
 /// source.
 const NAME_CONCURRENCY: usize = 32;
 const NAME_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long link-level discovery listens for answers.
+const LINK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Deadline of the second look at silent ports: long enough for TCP to
 /// retransmit the SYN once or twice (macOS: after ~1 s, then ~2 s).
@@ -91,6 +101,8 @@ pub struct ScanJob {
     pub timeout: Duration,
     /// Deep profile: also the names that cross subnets.
     pub deep: bool,
+    /// Deep profile on a network (not a single host): link-level discovery.
+    pub link_discovery: bool,
     /// Name servers to ask directly (deep profile), set by the scanner.
     pub name_servers: Vec<Ipv4Addr>,
 }
@@ -136,6 +148,7 @@ pub fn plan(config: &ScanConfig) -> Result<ScanJob, ScanError> {
         per_host_concurrency: (config.per_host_concurrency as usize).max(1),
         timeout: Duration::from_millis(timeout_ms),
         deep: config.profile == ScanProfile::Deep,
+        link_discovery: config.profile == ScanProfile::Deep,
         name_servers: Vec::new(),
     })
 }
@@ -273,18 +286,21 @@ pub async fn run(job: ScanJob, observer: Arc<dyn ScanObserver>, cancel: Cancella
         tokio::join!(
             resolve_names(&ctx),
             recheck_silent_ports(&ctx, recheck_timeout(job.timeout), Arc::clone(&sockets)),
+            discover_link(job.link_discovery),
         )
     };
-    if cancel.run_until_cancelled(second_look).await.is_none() {
+    let Some((_, _, (link_found, local_nets))) = cancel.run_until_cancelled(second_look).await
+    else {
         return;
-    }
+    };
+    let hints = attach_link(&ctx, &job.addrs, link_found, &local_nets);
     if job.deep {
         let names = deep_resolve_names(&ctx, &job.name_servers, Arc::clone(&sockets));
         if cancel.run_until_cancelled(names).await.is_none() {
             return;
         }
     }
-    classify_hosts(&ctx, &gateways);
+    classify_hosts(&ctx, &gateways, &hints);
 
     let summary = summarize(&ctx);
     ctx.report(ScanPhase::Done, true);
@@ -330,6 +346,8 @@ async fn probe_host(
         ssdp_info: None,
         first_seen: now,
         last_seen: now,
+        off_subnet: false,
+        model: None,
     };
     Some((host, tcp.silent))
 }
@@ -428,6 +446,8 @@ fn attach_arp(ctx: &Ctx, targets: &[Ipv4Addr], ports: &[u16]) {
                     ssdp_info: None,
                     first_seen: now,
                     last_seen: now,
+                    off_subnet: false,
+                    model: None,
                 })
             }
         }
@@ -468,6 +488,101 @@ async fn resolve_names(ctx: &Ctx) {
     ctx.report(ScanPhase::Resolving, true);
 }
 
+/// Link-level discovery on every interface of this machine (when `enabled`),
+/// with the networks of those interfaces.
+async fn discover_link(enabled: bool) -> (Vec<link_discovery::Found>, Vec<Ipv4Net>) {
+    if !enabled {
+        return (Vec::new(), Vec::new());
+    }
+    let networks = platform::current().enumerate_networks().unwrap_or_default();
+    // Point-to-point tunnels (VPNs) have no link to discover on.
+    let links: Vec<link_discovery::Link> = networks
+        .iter()
+        .filter(|n| !["utun", "ipsec", "ppp", "tun", "wg"].iter().any(|p| n.interface.starts_with(p)))
+        .filter_map(|n| {
+            Some(link_discovery::Link {
+                name: n.interface.clone(),
+                ipv4: n.ipv4.parse().ok()?,
+            })
+        })
+        .collect();
+    let nets = networks.iter().filter_map(|n| n.cidr.parse().ok()).collect();
+    (link_discovery::discover(&links, LINK_TIMEOUT).await, nets)
+}
+
+/// Merge link-level answers (see module docs, step 4): known hosts get the
+/// MAC, name and model they lacked; in-target addresses that answered only
+/// here are added, and so are addresses outside every network of this
+/// machine (`local`), marked `off_subnet`. Returns the device types the
+/// answers suggest, for `classify_hosts`.
+fn attach_link(
+    ctx: &Ctx,
+    targets: &[Ipv4Addr],
+    found: Vec<link_discovery::Found>,
+    local: &[Ipv4Net],
+) -> HashMap<Ipv4Addr, DeviceType> {
+    let targets: HashSet<Ipv4Addr> = targets.iter().copied().collect();
+    let now = now_ms();
+    let mut hints = HashMap::new();
+    for f in found {
+        if let Some(kind) = f.kind {
+            hints.insert(f.ip, kind);
+        }
+        let updated = {
+            let mut hosts = ctx.lock_hosts();
+            hosts.get_mut(&f.ip).and_then(|h| {
+                let mut changed = false;
+                if h.mac.is_none() {
+                    if let Some(mac) = &f.mac {
+                        h.vendor = oui::vendor(mac).map(str::to_string);
+                        h.mac = Some(mac.clone());
+                        changed = true;
+                    }
+                }
+                if let Some(name) = &f.name {
+                    if !h.hostnames.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                        h.hostnames.push(name.clone());
+                        changed = true;
+                    }
+                }
+                if h.model.is_none() && f.model.is_some() {
+                    h.model = f.model.clone();
+                    changed = true;
+                }
+                changed.then(|| h.clone())
+            })
+        };
+        if let Some(h) = updated {
+            ctx.observer.on_host(h);
+            continue;
+        }
+        if ctx.lock_hosts().contains_key(&f.ip) {
+            continue;
+        }
+        let off_subnet = !local.iter().any(|n| n.contains(&f.ip));
+        if !off_subnet && !targets.contains(&f.ip) {
+            continue; // on a network of ours, but not asked for
+        }
+        ctx.add_host(Host {
+            ip: f.ip.to_string(),
+            vendor: f.mac.as_deref().and_then(oui::vendor).map(str::to_string),
+            mac: f.mac,
+            hostnames: f.name.into_iter().collect(),
+            device_type: DeviceType::Unknown,
+            open_ports: Vec::new(),
+            rtt_ms: None,
+            mdns_services: Vec::new(),
+            ssdp_info: None,
+            first_seen: now,
+            last_seen: now,
+            off_subnet,
+            model: f.model,
+        });
+    }
+    ctx.report(ScanPhase::Resolving, true);
+    hints
+}
+
 /// The deep profile's names (see `deep_names`), added after the ones already
 /// found; hosts that got a new name are re-emitted.
 async fn deep_resolve_names(ctx: &Ctx, servers: &[Ipv4Addr], sockets: Arc<Semaphore>) {
@@ -499,13 +614,17 @@ async fn deep_resolve_names(ctx: &Ctx, servers: &[Ipv4Addr], sockets: Arc<Semaph
 
 /// Reverse DNS for `ips` on the blocking pool, at most [`NAME_CONCURRENCY`]
 /// lookups at once, each abandoned after [`NAME_TIMEOUT`].
-/// Assign each host its device type; re-emit the hosts that changed.
-fn classify_hosts(ctx: &Ctx, gateways: &[Ipv4Addr]) {
+/// Assign each host its device type, falling back on what its link-level
+/// answer said (`hints`); re-emit the hosts that changed.
+fn classify_hosts(ctx: &Ctx, gateways: &[Ipv4Addr], hints: &HashMap<Ipv4Addr, DeviceType>) {
     let changed: Vec<Host> = ctx
         .lock_hosts()
-        .values_mut()
-        .filter_map(|h| {
-            let t = classify::classify(h, gateways);
+        .iter_mut()
+        .filter_map(|(ip, h)| {
+            let mut t = classify::classify(h, gateways);
+            if matches!(t, DeviceType::Unknown | DeviceType::Other) {
+                t = hints.get(ip).copied().unwrap_or(t);
+            }
             (t != h.device_type).then(|| {
                 h.device_type = t;
                 h.clone()
