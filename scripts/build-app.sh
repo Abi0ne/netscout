@@ -27,6 +27,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/NetScout"
 cp "$APPLE/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp -R "$APPLE/Resources/"*.lproj "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,7 +35,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleName</key><string>NetScout</string>
     <key>CFBundleDevelopmentRegion</key><string>it</string>
-    <key>CFBundleLocalizations</key><array><string>it</string></array>
+    <key>CFBundleLocalizations</key><array><string>it</string><string>en</string></array>
     <key>CFBundleDisplayName</key><string>NetScout</string>
     <key>CFBundleIdentifier</key><string>dev.netscout.NetScout</string>
     <key>CFBundleExecutable</key><string>NetScout</string>

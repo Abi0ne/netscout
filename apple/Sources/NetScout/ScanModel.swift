@@ -13,7 +13,13 @@ final class ScanModel {
     var networks: [NetworkInfo] = []
     /// What to scan: a CIDR, an IP, a range ("192.168.1.10-50"), or a list.
     var target = "" {
-        didSet { vlan.follow(interface: networks.first { $0.cidr == target }?.interface) }
+        didSet { matchInterface() }
+    }
+    /// The interface the target's network is reached through. Two interfaces
+    /// can be on the same network (Wi-Fi and Ethernet in the office), so the
+    /// target alone does not say which one was chosen.
+    var interface: String? {
+        didSet { vlan.follow(interface: interface) }
     }
     var profile: ScanProfile = .standard
     var errorMessage: String?
@@ -186,7 +192,19 @@ final class ScanModel {
     /// Offer the VLAN when the scan's interface can carry one.
     private func refreshVLANPorts() {
         vlan.refreshCapable()
-        vlan.follow(interface: networks.first { $0.cidr == target }?.interface)
+        matchInterface()
+    }
+
+    /// Keep the chosen interface while it is on the target's network; else
+    /// take the one there that can carry VLANs (the cable over Wi-Fi), or the
+    /// first. A target that is no interface's network leaves `nil`.
+    private func matchInterface() {
+        let same = networks.filter { $0.cidr == target }
+        if let interface, same.contains(where: { $0.interface == interface }) {
+            vlan.follow(interface: interface)
+            return
+        }
+        interface = (same.first { vlan.capable.contains($0.interface) } ?? same.first)?.interface
     }
 
     func startScan() {

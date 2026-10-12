@@ -228,7 +228,7 @@ struct SidebarView: View {
         return VStack(alignment: .leading, spacing: 8) {
             Text("Rete").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if !model.networks.isEmpty {
-                Picker("Interfaccia", selection: $model.target) {
+                Picker("Interfaccia", selection: interfaceChoice) {
                     interfaceOptions
                 }
                 .labelsHidden()
@@ -256,7 +256,7 @@ struct SidebarView: View {
                 targetField
                 if !model.networks.isEmpty {
                     Menu {
-                        Picker("Interfaccia", selection: $model.target) {
+                        Picker("Interfaccia", selection: interfaceChoice) {
                             interfaceOptions
                         }
                         .pickerStyle(.inline)
@@ -304,12 +304,28 @@ struct SidebarView: View {
     @ViewBuilder
     private var interfaceOptions: some View {
         ForEach(model.networks, id: \.self) { net in
-            Text("\(net.interface) · \(net.cidr)").tag(net.cidr)
+            Text("\(net.interface) · \(net.cidr)").tag(Self.choice(net))
         }
         if !model.networks.contains(where: { $0.cidr == model.target }) {
-            Text("Personalizzata").tag(model.target)
+            Text("Personalizzata").tag("")
         }
     }
+
+    /// The picker's selection is the interface with its network, not the
+    /// network alone: Wi-Fi and Ethernet on the same network are two choices.
+    private var interfaceChoice: Binding<String> {
+        Binding {
+            model.networks
+                .first { $0.cidr == model.target && $0.interface == model.interface }
+                .map(Self.choice) ?? ""
+        } set: { choice in
+            guard let net = model.networks.first(where: { Self.choice($0) == choice }) else { return }
+            model.interface = net.interface
+            model.target = net.cidr
+        }
+    }
+
+    private static func choice(_ net: NetworkInfo) -> String { "\(net.interface) \(net.cidr)" }
 
     private var targetField: some View {
         @Bindable var model = model
@@ -375,7 +391,7 @@ private struct VLANOptions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("Enable VLAN scan", isOn: $vlan.enabled)
+            Toggle("Abilita VLAN scan", isOn: $vlan.enabled)
                 .toggleStyle(.checkbox)
                 .help("\(vlan.parent ?? "Questa porta") può ricevere VLAN taggate: scansiona anche una di quelle che arrivano sullo stesso cavo")
             if vlan.enabled {

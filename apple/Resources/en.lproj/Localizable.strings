@@ -1,0 +1,5 @@
+/* The app is written in Italian: the keys are the Italian text, and only
+   the strings listed here are translated. */
+
+/* Sidebar: also scan a tagged VLAN on the same cable. */
+"Abilita VLAN scan" = "Enable VLAN scan";
