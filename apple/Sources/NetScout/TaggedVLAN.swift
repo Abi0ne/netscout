@@ -245,8 +245,14 @@ final class TaggedVLAN {
         elif ! ifconfig $if inet $addr netmask $mask; then
           down; exit 1
         fi
-        nohup /bin/sh -c "while kill -0 $app 2>/dev/null && [ -e $marker ]; do sleep 1; done; ipconfig set $if NONE; ifconfig $if destroy" >/dev/null 2>&1 &
-        echo "$if $(ifconfig $if | awk "/inet /{print \$2, \$4; exit}")"
+        # The administrator prompt signals what the command leaves behind
+        # once it returns (nohup alone is not enough): the watcher ignores
+        # HUP, INT and TERM, which carries over to the shell exec runs.
+        ( trap "" HUP INT TERM; exec /bin/sh -c "while kill -0 $app 2>/dev/null && [ -e $marker ]; do sleep 1; done; ipconfig set $if NONE; ifconfig $if destroy" ) </dev/null >/dev/null 2>&1 &
+        # Not inside "$(...)": there the bash 3.2 behind sh brace-expands the
+        # comma in the awk program and splits it in two.
+        inet=$(ifconfig $if | awk "/inet /{print \$2, \$4; exit}")
+        echo "$if $inet"
         """#
 
     private static func upCommand(_ settings: Settings, marker: URL) -> String {
@@ -259,6 +265,7 @@ final class TaggedVLAN {
             marker.path(percentEncoded: false),
             String(ProcessInfo.processInfo.processIdentifier),
         ]
+        assert(!upScript.contains("'"), "upScript is passed inside single quotes")
         // Every argument is a validated name, number or address, or a path
         // in the user's temporary folder; quoted anyway.
         return "/bin/sh -c '\(upScript)' netscout-vlan " + args.map { "'\($0)'" }.joined(separator: " ")

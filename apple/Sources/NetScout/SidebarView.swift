@@ -329,9 +329,12 @@ private struct VLANOptions: View {
                         .textFieldStyle(.roundedBorder)
                         .help("Un indirizzo libero nella VLAN, con il prefisso della sua rete")
                 }
+                // Not fixedSize: measured at a tiny width for the window's
+                // minimum size it would ask for one word per line and push
+                // the whole scan panel below the window.
                 status
                     .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2...6)
             }
         }
     }
