@@ -338,6 +338,10 @@ struct IPv4Interface: Equatable, CustomStringConvertible {
     private var mask: UInt32 { prefix == 0 ? 0 : ~0 << (32 - prefix) }
 
     var network: IPv4Interface { IPv4Interface(address: address & mask, prefix: prefix) }
+    /// `ip` (dotted) is in this network.
+    func contains(_ ip: String) -> Bool {
+        NameServers.isIPv4(ip) && ipValue(ip) & mask == address & mask
+    }
     var ip: String { Self.dotted(address) }
     var netmask: String { Self.dotted(mask) }
     var description: String { "\(ip)/\(prefix)" }

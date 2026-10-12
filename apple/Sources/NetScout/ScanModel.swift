@@ -32,6 +32,9 @@ final class ScanModel {
     /// Target and depth of the last scan started (what a saved profile records).
     private(set) var scannedTarget = ""
     private(set) var scannedProfile: ScanProfile = .standard
+    /// The tagged VLAN the last scan took in along with the target, if any:
+    /// its devices are then told apart by network (see `segment(of:)`).
+    private(set) var scannedVLAN: ScannedVLAN?
 
     /// Saved profiles, newest first.
     private(set) var profiles: [ProfileSummary] = []
@@ -56,6 +59,8 @@ final class ScanModel {
     /// profiles tab is on screen).
     var scanSelection: String?
     var typeFilter: DeviceType?
+    /// The scan tab's network filter (a scan with a tagged VLAN only).
+    var segmentFilter: ScanSegment?
 
     /// The profile this scan was saved as, if it was.
     private(set) var savedScanProfileID: String?
@@ -201,16 +206,16 @@ final class ScanModel {
         Task {
             do {
                 let active = try await vlan.prepare(networks: others)
-                launchScan(trimmed, vlan: active.cidr)
+                launchScan(trimmed, vlan: ScannedVLAN(active))
             } catch {
                 errorMessage = error.localizedDescription
             }
         }
     }
 
-    private func launchScan(_ trimmed: String, vlan vlanCIDR: String? = nil) {
+    private func launchScan(_ trimmed: String, vlan: ScannedVLAN? = nil) {
         guard let scanner, !isScanning else { return }
-        let targets = [trimmed] + (vlanCIDR.map { [$0] } ?? [])
+        let targets = [trimmed] + (vlan.map { [$0.network.description] } ?? [])
         generation += 1
         let gen = generation
         pendingHosts = [:]
@@ -228,6 +233,8 @@ final class ScanModel {
         suggestedThisScan = false
         scannedTarget = targets.joined(separator: ", ")
         scannedProfile = profile
+        scannedVLAN = vlan
+        segmentFilter = nil
         let observer = ObserverBridge { [weak self] event in
             self?.apply(event, generation: gen)
         }
@@ -248,6 +255,32 @@ final class ScanModel {
         } catch {
             debugLog("scan failed to start: \(error)")
             errorMessage = "\(error)"
+        }
+    }
+
+    /// Where `host` was found, when the last scan took in a tagged VLAN;
+    /// `nil` for a plain scan.
+    func segment(of host: Host) -> ScanSegment? {
+        guard let scannedVLAN else { return nil }
+        if host.offSubnet { return .offSubnet }
+        return scannedVLAN.network.contains(host.ip) ? .vlan(scannedVLAN.tag) : .native
+    }
+
+    /// The networks of the last scan with a tagged VLAN, in the sidebar's
+    /// order, with their devices; empty for a plain scan.
+    var segments: [(segment: ScanSegment, hosts: [Host])] {
+        guard scannedVLAN != nil else { return [] }
+        let groups = Dictionary(grouping: hosts.values) { segment(of: $0) ?? .native }
+        return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
+    }
+
+    /// The network a sidebar heading names: the target as written for the
+    /// native one, the VLAN's own network.
+    func network(of segment: ScanSegment) -> String? {
+        switch segment {
+        case .native: scannedTarget.components(separatedBy: ", ").first
+        case .vlan: scannedVLAN?.network.description
+        case .offSubnet: nil
         }
     }
 
@@ -684,4 +717,45 @@ func debugLog(_ message: @autoclosure () -> String) {
 /// Numeric value of a dotted IPv4 address, for sorting.
 func ipValue(_ ip: String) -> UInt32 {
     ip.split(separator: ".").reduce(0) { ($0 << 8) | (UInt32($1) ?? 0) }
+}
+
+/// The tagged VLAN a scan took in: its tag and its network.
+struct ScannedVLAN: Equatable {
+    let tag: Int
+    let network: IPv4Interface
+
+    init?(_ active: TaggedVLAN.Active) {
+        guard let cidr = IPv4Interface(active.cidr) else { return nil }
+        tag = active.settings.tag
+        network = cidr
+    }
+}
+
+/// Where a device of a scan with a tagged VLAN was found: the network in
+/// access (untagged), the VLAN, or neither (link-level discovery only).
+enum ScanSegment: Hashable, Comparable {
+    case native
+    case vlan(Int)
+    case offSubnet
+
+    var label: String {
+        switch self {
+        case .native: "Nativa"
+        case .vlan(let tag): "VLAN \(tag)"
+        case .offSubnet: "Fuori rete"
+        }
+    }
+
+    /// For the table's "VLAN" column: the tag alone.
+    var shortLabel: String {
+        if case .vlan(let tag) = self { String(tag) } else { label }
+    }
+
+    var symbol: String {
+        switch self {
+        case .native: "network"
+        case .vlan: "tag"
+        case .offSubnet: "cable.connector"
+        }
+    }
 }

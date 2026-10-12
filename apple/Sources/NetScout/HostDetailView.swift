@@ -142,6 +142,9 @@ struct HostDetailView: View {
     private var infoGrid: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
             row("Indirizzo IP", host.ip, monospaced: true)
+            if let segment = model.segment(of: host) {
+                row("Rete", model.network(of: segment).map { "\(segment.label) · \($0)" } ?? segment.label)
+            }
             row("MAC", host.mac ?? "—", monospaced: true)
             row("Produttore", host.vendor ?? macNote)
             if let model = host.model {

@@ -119,6 +119,7 @@ struct HelpTopic: Identifiable {
                 "Con il DHCP NetScout tiene solo l'indirizzo: router e DNS della VLAN non vengono usati, così il traffico del Mac non cambia strada.",
                 "Se la rete della VLAN coincide con una che il Mac raggiunge già, NetScout non la attiva.",
             ]),
+            .text("Nei risultati i dispositivi sono divisi per rete: nella barra laterale c'è una sezione per la rete **Nativa** (quella in access, senza tag), una per la **VLAN** e, con la scansione approfondita, una per i dispositivi **Fuori rete**; un clic su una riga mostra solo quei dispositivi. La tabella ha in più la colonna **VLAN** (Nativa, il numero del tag o Fuori rete), ordinabile come le altre, e la scheda del dispositivo indica la sua rete. Cercando `vlan 69` si trovano i dispositivi di quella VLAN."),
             .note("Serve una porta Ethernet: sul Wi‑Fi le VLAN taggate non arrivano. La porta dello switch deve essere configurata come trunk (o ibrida) con quella VLAN."),
             .heading("I profili di scansione"),
             .bullets([

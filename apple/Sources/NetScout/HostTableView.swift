@@ -9,6 +9,8 @@ struct HostRow: Identifiable {
     var offline = false
     /// The user's note (profiles tab only).
     var note = ""
+    /// Where it was found (a scan with a tagged VLAN only).
+    var segment: ScanSegment?
     var id: String { offline ? ScanModel.offlineID(host) : host.ip }
     var ipKey: UInt32 { ipValue(host.ip) }
     var typeKey: String { host.deviceType.label }
@@ -18,6 +20,7 @@ struct HostRow: Identifiable {
     var rttKey: Double { offline ? .infinity : host.rttMs ?? .greatestFiniteMagnitude }
     var portsKey: Int { host.openPorts.count }
     var noteKey: String { note }
+    var segmentKey: ScanSegment { segment ?? .native }
 }
 
 /// The editable notes column of a profile's table.
@@ -30,12 +33,13 @@ struct NoteEditing {
 
 /// The table's columns: titles and sort keys.
 enum HostColumn: CaseIterable {
-    case type, ip, name, vendor, mac, latency, ports, note
+    case type, ip, network, name, vendor, mac, latency, ports, note
 
     var title: String {
         switch self {
         case .type: "Tipo"
         case .ip: "IP"
+        case .network: "VLAN"
         case .name: "Nome"
         case .vendor: "Produttore"
         case .mac: "MAC"
@@ -51,6 +55,7 @@ enum HostColumn: CaseIterable {
         return switch self {
         case .type: KeyPathComparator(\HostRow.typeKey, comparator: .localizedStandard, order: order)
         case .ip: KeyPathComparator(\HostRow.ipKey, order: order)
+        case .network: KeyPathComparator(\HostRow.segmentKey, order: order)
         case .name: KeyPathComparator(\HostRow.nameKey, comparator: .localizedStandard, order: order)
         case .vendor: KeyPathComparator(\HostRow.vendorKey, comparator: .localizedStandard, order: order)
         case .mac: KeyPathComparator(\HostRow.macKey, comparator: .localizedStandard, order: order)
@@ -88,32 +93,38 @@ struct HostTableView: View {
 
     /// When set, the table has an editable "Note" column.
     var notes: NoteEditing?
+    /// When set, the table has a "VLAN" column: where each device was found.
+    var segment: ((Host) -> ScanSegment?)?
     /// The row under the mouse: its note shows the pencil.
     @ViewState private var hoveredRow: String?
 
     var body: some View {
         Group {
-            if let notes {
+            // One table per set of columns: the column builder of macOS 14.0
+            // takes no `if`.
+            switch (notes, segment != nil) {
+            case (let notes?, true):
                 Table(rows, selection: $selection, sortOrder: sortOrder) {
+                    leadingColumns
+                    networkColumn
                     columns
-                    TableColumn(title(.note), value: \.noteKey) { row in
-                        if notes.editable {
-                            NoteField(text: Binding(
-                                get: { notes.note(row.host) },
-                                set: { notes.setNote($0, row.host) }
-                            ), hovered: hoveredRow == row.id)
-                        } else {
-                            Text(row.note.isEmpty ? "—" : row.note)
-                                .foregroundStyle(row.note.isEmpty ? .tertiary : .secondary)
-                                .lineLimit(1)
-                                .help(row.note)
-                        }
-                    }
-                    .width(min: 140, ideal: 240)
-                    .customizationID("note")
+                    noteColumn(notes)
                 }
-            } else {
+            case (let notes?, false):
                 Table(rows, selection: $selection, sortOrder: sortOrder) {
+                    leadingColumns
+                    columns
+                    noteColumn(notes)
+                }
+            case (nil, true):
+                Table(rows, selection: $selection, sortOrder: sortOrder) {
+                    leadingColumns
+                    networkColumn
+                    columns
+                }
+            case (nil, false):
+                Table(rows, selection: $selection, sortOrder: sortOrder) {
+                    leadingColumns
                     columns
                 }
             }
@@ -182,8 +193,9 @@ struct HostTableView: View {
 
     // MARK: Columns
 
+    /// Type and IP, before the network column.
     @TableColumnBuilder<HostRow, KeyPathComparator<HostRow>>
-    private var columns: some TableColumnContent<HostRow, KeyPathComparator<HostRow>> {
+    private var leadingColumns: some TableColumnContent<HostRow, KeyPathComparator<HostRow>> {
         TableColumn(title(.type), value: \.typeKey) { row in
             Label(row.host.deviceType.label, systemImage: row.host.deviceType.symbol)
                 .foregroundStyle(row.offline || row.host.deviceType == .unknown ? .secondary : .primary)
@@ -196,6 +208,41 @@ struct HostTableView: View {
         }
         .width(min: 95, ideal: 110)
         .customizationID("ip")
+    }
+
+    private var networkColumn: some TableColumnContent<HostRow, KeyPathComparator<HostRow>> {
+        TableColumn(title(.network), value: \.segmentKey) { row in
+            if let segment = row.segment {
+                Text(segment.shortLabel)
+                    .monospacedDigit()
+                    .foregroundStyle(segment.tint)
+            }
+        }
+        .width(min: 70, ideal: 85)
+        .customizationID("network")
+    }
+
+    private func noteColumn(_ notes: NoteEditing) -> some TableColumnContent<HostRow, KeyPathComparator<HostRow>> {
+        TableColumn(title(.note), value: \.noteKey) { row in
+            if notes.editable {
+                NoteField(text: Binding(
+                    get: { notes.note(row.host) },
+                    set: { notes.setNote($0, row.host) }
+                ), hovered: hoveredRow == row.id)
+            } else {
+                Text(row.note.isEmpty ? "—" : row.note)
+                    .foregroundStyle(row.note.isEmpty ? .tertiary : .secondary)
+                    .lineLimit(1)
+                    .help(row.note)
+            }
+        }
+        .width(min: 140, ideal: 240)
+        .customizationID("note")
+    }
+
+    /// Name to ports.
+    @TableColumnBuilder<HostRow, KeyPathComparator<HostRow>>
+    private var columns: some TableColumnContent<HostRow, KeyPathComparator<HostRow>> {
         TableColumn(title(.name), value: \.nameKey) { row in
             Text(row.host.displayName ?? "—")
                 .foregroundStyle(row.host.displayName == nil ? .tertiary : row.offline ? .secondary : .primary)
@@ -245,8 +292,9 @@ struct HostTableView: View {
     private var rows: [HostRow] {
         let order = sortKeys.map { $0.column.comparator(ascending: $0.ascending) }
         let note = { (host: Host) in notes?.note(host) ?? "" }
-        return hosts.map { HostRow(host: $0, note: note($0)) }.sorted(using: order)
-            + offline.map { HostRow(host: $0, offline: true, note: note($0)) }.sorted(using: order)
+        let segment = { (host: Host) in self.segment?(host) }
+        return hosts.map { HostRow(host: $0, note: note($0), segment: segment($0)) }.sorted(using: order)
+            + offline.map { HostRow(host: $0, offline: true, note: note($0), segment: segment($0)) }.sorted(using: order)
     }
 
     // MARK: Fitting a column to its content
@@ -268,6 +316,7 @@ struct HostTableView: View {
             switch column {
             case .type: width(row.host.deviceType.label, body) + icon
             case .ip: width(row.host.ip, digits)
+            case .network: width(row.segment?.shortLabel ?? "", body)
             case .name: width(row.host.displayName ?? "—", body)
             case .vendor: width(row.host.vendor ?? "—", body)
             case .mac: width(row.host.mac ?? "—", mono)

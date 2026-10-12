@@ -1,12 +1,14 @@
 import NetScoutCore
 import SwiftUI
 
-/// The devices found, by type (click a type to filter the table), what the
+/// The devices found, by type (click a type to filter the table) and, after
+/// a scan with a tagged VLAN, by network first; what the
 /// scan recognized and saved, and, fixed at the bottom, the scan target,
 /// profile, start/stop and progress.
 struct SidebarView: View {
     @Environment(ScanModel.self) private var model
     @Binding var typeFilter: DeviceType?
+    @Binding var segmentFilter: ScanSegment?
     @ViewState private var savingName: String?
     @ViewState private var showingVLAN = false
     /// The sidebar's height: the scan panel turns compact when it is short,
@@ -20,20 +22,33 @@ struct SidebarView: View {
     var body: some View {
         List {
             if !model.hosts.isEmpty {
-                Section {
-                    TypeRow(label: "Tutti", symbol: "square.grid.2x2", count: model.hosts.count,
-                            selected: typeFilter == nil) { typeFilter = nil }
-                    ForEach(typeCounts, id: \.type) { entry in
-                        TypeRow(label: entry.type.label, symbol: entry.type.symbol, count: entry.count,
-                                selected: typeFilter == entry.type) {
-                            typeFilter = typeFilter == entry.type ? nil : entry.type
+                let segments = model.segments
+                if segments.isEmpty {
+                    Section {
+                        TypeRow(label: "Tutti", symbol: "square.grid.2x2", count: model.hosts.count,
+                                selected: typeFilter == nil) { typeFilter = nil }
+                        ForEach(typeCounts(Array(model.hosts.values)), id: \.type) { entry in
+                            TypeRow(label: entry.type.label, symbol: entry.type.symbol, count: entry.count,
+                                    selected: typeFilter == entry.type) {
+                                typeFilter = typeFilter == entry.type ? nil : entry.type
+                            }
                         }
+                    } header: {
+                        devicesHeader
                     }
-                } header: {
-                    // A little larger than the other headings, and apart from its list.
-                    Text("Dispositivi")
-                        .font(.system(size: 13, weight: .semibold))
-                        .padding(.bottom, 6)
+                } else {
+                    Section {
+                        TypeRow(label: "Tutti", symbol: "square.grid.2x2", count: model.hosts.count,
+                                selected: typeFilter == nil && segmentFilter == nil) {
+                            typeFilter = nil
+                            segmentFilter = nil
+                        }
+                    } header: {
+                        devicesHeader
+                    }
+                    ForEach(segments, id: \.segment) { entry in
+                        segmentSection(entry.segment, hosts: entry.hosts)
+                    }
                 }
             }
 
@@ -115,6 +130,45 @@ struct SidebarView: View {
             Button("Annulla", role: .cancel) {}
         } message: {
             Text("Salva i \(model.hosts.count) dispositivi trovati per confrontarli con le prossime scansioni.")
+        }
+    }
+
+    /// A little larger than the other headings, and apart from its list.
+    private var devicesHeader: some View {
+        Text("Dispositivi")
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.bottom, 6)
+    }
+
+    /// One network of a scan with a tagged VLAN: all its devices, then by
+    /// type. A click filters the table to that network (and type).
+    private func segmentSection(_ segment: ScanSegment, hosts: [Host]) -> some View {
+        Section {
+            TypeRow(label: "Tutti", symbol: segment.symbol, count: hosts.count,
+                    selected: segmentFilter == segment && typeFilter == nil) {
+                segmentFilter = segment
+                typeFilter = nil
+            }
+            ForEach(typeCounts(hosts), id: \.type) { entry in
+                let selected = segmentFilter == segment && typeFilter == entry.type
+                TypeRow(label: entry.type.label, symbol: entry.type.symbol, count: entry.count,
+                        selected: selected) {
+                    segmentFilter = segment
+                    typeFilter = selected ? nil : entry.type
+                }
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Text(segment.label)
+                    .foregroundStyle(segment == .native ? Color.primary : segment.tint)
+                if let network = model.network(of: segment) {
+                    Text(network)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
         }
     }
 
@@ -292,8 +346,8 @@ struct SidebarView: View {
         .disabled(model.vlan.isPreparing)
     }
 
-    private var typeCounts: [(type: DeviceType, count: Int)] {
-        let counts = Dictionary(grouping: model.hosts.values) { (h: Host) in h.deviceType }.mapValues(\.count)
+    private func typeCounts(_ hosts: [Host]) -> [(type: DeviceType, count: Int)] {
+        let counts = Dictionary(grouping: hosts) { (h: Host) in h.deviceType }.mapValues(\.count)
         return DeviceType.allCases.compactMap { t in counts[t].map { (t, $0) } }
             .sorted { $0.count > $1.count }
     }

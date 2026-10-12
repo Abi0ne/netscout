@@ -17,7 +17,7 @@ struct RootView: View {
             NavigationSplitView {
                 Group {
                     switch model.selectedTab {
-                    case .scan: SidebarView(typeFilter: $model.typeFilter)
+                    case .scan: SidebarView(typeFilter: $model.typeFilter, segmentFilter: $model.segmentFilter)
                     case .profiles: ProfilesSidebar()
                     }
                 }
@@ -295,7 +295,8 @@ struct ScanTable: View {
                 if model.scanSelection == id { model.scanSelection = nil }
                 model.forgetOffline(id: id)
             },
-            notes: notes
+            notes: notes,
+            segment: model.scannedVLAN == nil ? nil : { model.segment(of: $0) }
         )
         .overlay { emptyState }
     }
@@ -305,8 +306,12 @@ struct ScanTable: View {
 
     private func matches(_ host: Host) -> Bool {
         if let typeFilter = model.typeFilter, host.deviceType != typeFilter { return false }
+        let segment = model.segment(of: host)
+        if let segmentFilter = model.segmentFilter, segment != segmentFilter { return false }
         let query = model.scanSearch.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty else { return true }
+        // "vlan 69" finds the VLAN's devices.
+        if let segment, segment.label.localizedCaseInsensitiveContains(query) { return true }
         return hostMatches(host: host, note: notes.note(host), query: query)
     }
 

@@ -1,4 +1,5 @@
 import NetScoutCore
+import SwiftUI
 
 extension DeviceType: CaseIterable {
     public static let allCases: [DeviceType] = [
@@ -80,5 +81,17 @@ extension Host {
     /// Best display name: first hostname without the ".local" suffix.
     var displayName: String? {
         hostnames.first.map { $0.hasSuffix(".local") ? String($0.dropLast(6)) : $0 }
+    }
+}
+
+extension ScanSegment {
+    /// A VLAN in the accent colour, off-network devices in the purple of
+    /// their "Fuori rete" badge.
+    var tint: Color {
+        switch self {
+        case .native: .secondary
+        case .vlan: .accentColor
+        case .offSubnet: .purple
+        }
     }
 }
