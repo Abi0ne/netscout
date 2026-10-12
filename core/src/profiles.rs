@@ -54,10 +54,11 @@ pub struct SavedProfile {
     /// The user's notes, by [`device_key`]. Never empty strings.
     #[serde(default)]
     pub notes: HashMap<String, String>,
-    /// The tagged VLAN the scan took in along with `target`, if any: its
-    /// devices are told apart from the native network's by address.
+    /// The tagged VLANs scanned along with `target`, by tag, gathered over
+    /// the scans that updated the profile: their devices are told apart
+    /// from the native network's by address.
     #[serde(default)]
-    pub vlan: Option<ProfileVlan>,
+    pub vlans: Vec<ProfileVlan>,
 }
 
 /// A tagged VLAN scanned with a profile's target.
@@ -184,7 +185,7 @@ impl ProfileStore {
             offline_hosts,
             updated_at: None,
             notes: HashMap::new(),
-            vlan: None,
+            vlans: Vec::new(),
         };
         self.write(&profile)?;
         Ok(ProfileSummary::from(&profile))
@@ -233,11 +234,14 @@ impl ProfileStore {
         self.write(&profile)
     }
 
-    /// Set the tagged VLAN of profile `id` (`None`: the scan had none).
+    /// Set the tagged VLANs of profile `id` (kept by tag, one each).
     /// Separate from `save` and `update`, like the notes.
-    pub fn set_vlan(self: Arc<Self>, id: String, vlan: Option<ProfileVlan>) -> Result<(), ScanError> {
+    pub fn set_vlans(self: Arc<Self>, id: String, vlans: Vec<ProfileVlan>) -> Result<(), ScanError> {
         let mut profile = read_file(&self.path(&id)?)?;
-        profile.vlan = vlan;
+        let mut vlans = vlans;
+        vlans.sort_by_key(|v| v.tag);
+        vlans.dedup_by_key(|v| v.tag);
+        profile.vlans = vlans;
         self.write(&profile)
     }
 
@@ -364,8 +368,15 @@ pub fn host_matches(host: &Host, note: Option<String>, query: String) -> bool {
 
 fn read_file(path: &Path) -> Result<SavedProfile, ScanError> {
     let bytes = fs::read(path).map_err(|e| io_error("read profile", path, e))?;
-    let file: ProfileFile = serde_json::from_slice(&bytes)
-        .map_err(|e| ScanError::Internal(format!("{}: invalid profile: {e}", path.display())))?;
+    let invalid = |e: serde_json::Error| ScanError::Internal(format!("{}: invalid profile: {e}", path.display()));
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes).map_err(invalid)?;
+    // Development builds wrote a single "vlan".
+    if let Some(profile) = json.get_mut("profile").and_then(|p| p.as_object_mut()) {
+        if let Some(vlan) = profile.remove("vlan").filter(|v| !v.is_null()) {
+            profile.entry("vlans").or_insert_with(|| serde_json::Value::Array(vec![vlan]));
+        }
+    }
+    let file: ProfileFile = serde_json::from_value(json).map_err(invalid)?;
     if file.version > FORMAT_VERSION {
         return Err(ScanError::Unsupported(format!(
             "{}: profile format {} is newer than this app",
@@ -743,11 +754,13 @@ mod tests {
         assert_eq!(list.len(), 1);
         let loaded = store.clone().load(saved.id.clone()).unwrap();
         assert_eq!(loaded.hosts[0].open_ports[0].number, 80);
-        assert_eq!(loaded.vlan, None);
+        assert!(loaded.vlans.is_empty());
 
-        let vlan = ProfileVlan { tag: 69, network: "172.20.20.0/24".into() };
-        store.clone().set_vlan(saved.id.clone(), Some(vlan.clone())).unwrap();
-        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlan, Some(vlan.clone()));
+        let v69 = ProfileVlan { tag: 69, network: "172.20.20.0/24".into() };
+        let v2 = ProfileVlan { tag: 2, network: "172.20.10.0/24".into() };
+        store.clone().set_vlans(saved.id.clone(), vec![v69.clone(), v2.clone(), v69.clone()]).unwrap();
+        let vlans = vec![v2, v69];
+        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlans, vlans);
 
         store
             .clone()
@@ -769,8 +782,18 @@ mod tests {
         assert_eq!((updated.host_count, updated.offline_count), (0, 1));
         assert!(updated.updated_at.is_some());
         assert_eq!(updated.created_at, saved.created_at);
-        // An update leaves the VLAN to set_vlan.
-        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlan, Some(vlan));
+        // An update leaves the VLANs to set_vlans.
+        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlans, vlans);
+
+        // A development build's single "vlan" reads as the list.
+        let path = store.path(&saved.id).unwrap();
+        let old = fs::read_to_string(&path).unwrap().replace(
+            &format!("\"vlans\": {}", serde_json::to_string_pretty(&vlans).unwrap().replace('\n', "\n    ")),
+            "\"vlan\": { \"tag\": 5, \"network\": \"10.5.0.0/24\" }",
+        );
+        assert!(old.contains("\"vlan\":"), "{old}");
+        fs::write(&path, old).unwrap();
+        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlans[0].tag, 5);
 
         assert!(store.clone().load("../x".into()).is_err());
         store.clone().delete(saved.id).unwrap();

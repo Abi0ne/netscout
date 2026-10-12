@@ -198,7 +198,7 @@ private struct ProfileDetailView: View {
     @ViewState private var segmentFilter: ScanSegment?
 
     private var profile: SavedProfile? { model.savedProfiles[summary.id] }
-    private var vlan: ScannedVLAN? { ScannedVLAN(profile?.vlan) }
+    private var vlans: [ScannedVLAN] { profile?.vlans.compactMap(ScannedVLAN.init) ?? [] }
     private var unsaved: Bool { model.hasUnsavedNotes(profile: summary.id) }
 
     var body: some View {
@@ -222,7 +222,7 @@ private struct ProfileDetailView: View {
                 }
             }
             .padding(16)
-            if vlan != nil {
+            if !vlans.isEmpty {
                 segmentPicker
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
@@ -236,7 +236,7 @@ private struct ProfileDetailView: View {
                     note: { model.note(profile: summary.id, host: $0) },
                     setNote: { model.setNote($0, profile: summary.id, host: $1) }
                 ),
-                segment: vlan.map { vlan in { ScanSegment.of($0, vlan: vlan) } }
+                segment: vlans.isEmpty ? nil : { [vlans] in ScanSegment.of($0, vlans: vlans) }
             )
         }
         .onChange(of: summary.id) { segmentFilter = nil }
@@ -246,7 +246,7 @@ private struct ProfileDetailView: View {
     /// native one, the VLAN, off-network.
     private var segmentPicker: some View {
         let all = (profile?.hosts ?? []) + (profile?.offlineHosts ?? [])
-        let groups = ScanSegment.groups(all, vlan: vlan)
+        let groups = ScanSegment.groups(all, vlans: vlans)
         return Picker("Rete", selection: $segmentFilter) {
             Text("Tutte (\(all.count))").tag(ScanSegment?.none)
             ForEach(groups, id: \.segment) { entry in
@@ -256,12 +256,12 @@ private struct ProfileDetailView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
-        .help(vlan.map { "Rete nativa \(summary.target.components(separatedBy: ", ").first ?? ""), VLAN \($0.tag) \($0.network)" } ?? "")
+        .help((["Rete nativa \(ScanModel.nativeTarget(summary.target))"] + vlans.map { "VLAN \($0.tag) \($0.network)" }).joined(separator: ", "))
     }
 
     private func filtered(_ hosts: [Host]) -> [Host] {
         hosts.filter { host in
-            let segment = ScanSegment.of(host, vlan: vlan)
+            let segment = ScanSegment.of(host, vlans: vlans)
             if let segmentFilter, segment != segmentFilter { return false }
             guard !query.isEmpty else { return true }
             // "vlan 69" finds the VLAN's devices.

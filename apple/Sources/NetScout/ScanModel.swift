@@ -261,21 +261,24 @@ final class ScanModel {
     /// Where `host` was found, when the last scan took in a tagged VLAN;
     /// `nil` for a plain scan.
     func segment(of host: Host) -> ScanSegment? {
-        ScanSegment.of(host, vlan: scannedVLAN)
+        ScanSegment.of(host, vlans: scannedVLANs)
     }
+
+    /// The last scan's VLAN, as a list (none or one).
+    private var scannedVLANs: [ScannedVLAN] { scannedVLAN.map { [$0] } ?? [] }
 
     /// The networks of the last scan with a tagged VLAN, in the sidebar's
     /// order, with their devices; empty for a plain scan.
     var segments: [(segment: ScanSegment, hosts: [Host])] {
         guard scannedVLAN != nil else { return [] }
-        return ScanSegment.groups(Array(hosts.values), vlan: scannedVLAN)
+        return ScanSegment.groups(Array(hosts.values), vlans: scannedVLANs)
     }
 
     /// The network a sidebar heading names: the target as written for the
     /// native one, the VLAN's own network.
     func network(of segment: ScanSegment) -> String? {
         switch segment {
-        case .native: scannedTarget.components(separatedBy: ", ").first
+        case .native: Self.nativeTarget(scannedTarget)
         case .vlan: scannedVLAN?.network.description
         case .offSubnet: nil
         }
@@ -398,7 +401,7 @@ extension ScanModel {
             // The notes shown with the scan go along with it.
             let notes = scanNotes
             if !notes.isEmpty { try profileStore.setNotes(id: saved.id, notes: notes) }
-            if let scannedVLAN { try profileStore.setVlan(id: saved.id, vlan: scannedVLAN.profileVLAN) }
+            if let scannedVLAN { try profileStore.setVlans(id: saved.id, vlans: [scannedVLAN.profileVLAN]) }
             savedScanProfileID = saved.id
             refreshProfiles()
             return saved
@@ -442,12 +445,34 @@ extension ScanModel {
     func compareScan(withProfile id: String) {
         guard hasFinishedScan, let saved = loadProfile(id: id),
               let summary = profiles.first(where: { $0.id == id }) else { return }
+        // Only the networks this scan took in: the devices of the profile's
+        // other VLANs were not looked for, so they are neither gone nor off.
+        let others = otherVLANs(of: saved)
         comparison = ProfileComparison(
             profile: summary,
-            diff: diffHosts(baseline: saved.hosts, baselineOffline: saved.offlineHosts, current: sortedHosts),
-            targetDiffers: saved.target != scannedTarget,
+            diff: diffHosts(
+                baseline: saved.hosts.filter { !Self.isIn(others, $0) },
+                baselineOffline: saved.offlineHosts.filter { !Self.isIn(others, $0) },
+                current: sortedHosts
+            ),
+            targetDiffers: Self.nativeTarget(saved.target) != Self.nativeTarget(scannedTarget),
             depthDiffers: saved.scanProfile != scannedProfile
         )
+    }
+
+    /// The VLANs of `saved` this scan did not take in.
+    func otherVLANs(of saved: SavedProfile) -> [ScannedVLAN] {
+        saved.vlans.compactMap(ScannedVLAN.init).filter { $0.tag != scannedVLAN?.tag }
+    }
+
+    /// `host` belongs to one of `vlans`.
+    nonisolated static func isIn(_ vlans: [ScannedVLAN], _ host: Host) -> Bool {
+        !host.offSubnet && vlans.contains { $0.network.contains(host.ip) }
+    }
+
+    /// The target as written, without the VLAN networks after it.
+    nonisolated static func nativeTarget(_ target: String) -> String {
+        target.components(separatedBy: ", ").first ?? target
     }
 }
 
@@ -628,12 +653,19 @@ extension ScanModel {
     @discardableResult
     func updateProfile(id: String) -> Bool {
         guard let profileStore, hasFinishedScan else { return false }
+        // The profile's other VLANs, scanned another time, stay as they were;
+        // the native network and this scan's VLAN are replaced.
+        let saved = loadProfile(id: id)
+        let others = saved.map(otherVLANs) ?? []
+        let vlans = (others + scannedVLANs).sorted { $0.tag < $1.tag }
+        let target = ([Self.nativeTarget(scannedTarget)] + vlans.map(\.network.description)).joined(separator: ", ")
         do {
             try profileStore.update(
-                id: id, target: scannedTarget, scanProfile: scannedProfile,
-                hosts: sortedHosts, offlineHosts: sortedOfflineHosts
+                id: id, target: target, scanProfile: scannedProfile,
+                hosts: sortedHosts + (saved?.hosts ?? []).filter { Self.isIn(others, $0) },
+                offlineHosts: sortedOfflineHosts + (saved?.offlineHosts ?? []).filter { Self.isIn(others, $0) }
             )
-            try profileStore.setVlan(id: id, vlan: scannedVLAN?.profileVLAN)
+            try profileStore.setVlans(id: id, vlans: vlans.map(\.profileVLAN))
             refreshProfiles()
             return true
         } catch {
@@ -729,9 +761,9 @@ struct ScannedVLAN: Equatable {
         network = cidr
     }
 
-    /// The one a saved profile recorded.
-    init?(_ saved: ProfileVlan?) {
-        guard let saved, let cidr = IPv4Interface(saved.network) else { return nil }
+    /// One a saved profile recorded.
+    init?(_ saved: ProfileVlan) {
+        guard let cidr = IPv4Interface(saved.network) else { return nil }
         tag = Int(saved.tag)
         network = cidr
     }
@@ -746,17 +778,18 @@ enum ScanSegment: Hashable, Comparable {
     case vlan(Int)
     case offSubnet
 
-    /// Where `host` was found, for a scan that took in `vlan`; `nil` without one.
-    static func of(_ host: Host, vlan: ScannedVLAN?) -> ScanSegment? {
-        guard let vlan else { return nil }
+    /// Where `host` was found, for scans that took in `vlans`; `nil`
+    /// without any.
+    static func of(_ host: Host, vlans: [ScannedVLAN]) -> ScanSegment? {
+        guard !vlans.isEmpty else { return nil }
         if host.offSubnet { return .offSubnet }
-        return vlan.network.contains(host.ip) ? .vlan(vlan.tag) : .native
+        return vlans.first { $0.network.contains(host.ip) }.map { .vlan($0.tag) } ?? .native
     }
 
     /// `hosts` by network, in order; empty without a VLAN.
-    static func groups(_ hosts: [Host], vlan: ScannedVLAN?) -> [(segment: ScanSegment, hosts: [Host])] {
-        guard vlan != nil else { return [] }
-        let groups = Dictionary(grouping: hosts) { of($0, vlan: vlan) ?? .native }
+    static func groups(_ hosts: [Host], vlans: [ScannedVLAN]) -> [(segment: ScanSegment, hosts: [Host])] {
+        guard !vlans.isEmpty else { return [] }
+        let groups = Dictionary(grouping: hosts) { of($0, vlans: vlans) ?? .native }
         return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
     }
 

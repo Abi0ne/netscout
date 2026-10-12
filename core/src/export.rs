@@ -260,7 +260,7 @@ mod tests {
             offline_hosts: vec![],
             updated_at: None,
             notes,
-            vlan: None,
+            vlans: vec![],
         };
         let empty = SavedProfile {
             id: "2".into(),
