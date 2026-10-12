@@ -107,7 +107,7 @@ struct HelpTopic: Identifiable {
             ]),
             .text("Premendo Invio nel campo la scansione parte subito."),
             .heading("Una VLAN taggata sullo stesso cavo"),
-            .text("Se la porta dello switch a cui è collegato il Mac porta, oltre alla rete in access, anche una VLAN taggata, NetScout può scansionare entrambe insieme. Quando nel menu delle interfacce scegli una **porta Ethernet che può ricevere VLAN** (quella di un dock o di un adattatore, non il Wi‑Fi), sotto la destinazione compare **Anche una VLAN taggata su enN** (nel pannello compatto è il pulsante con l'etichetta accanto alla destinazione). Spuntala e indica:"),
+            .text("Se la porta dello switch a cui è collegato il Mac porta, oltre alla rete in access, anche una VLAN taggata, NetScout può scansionare entrambe insieme. Quando nel menu delle interfacce scegli una **porta Ethernet che può ricevere VLAN** (quella di un dock o di un adattatore, non il Wi‑Fi), sotto la destinazione compare **Enable VLAN scan** (nel pannello compatto è il pulsante con l'etichetta accanto alla destinazione). Spuntala e indica:"),
             .bullets([
                 "il **tag** della VLAN (da 1 a 4094);",
                 "come avere un indirizzo nella VLAN: **DHCP**, se nella VLAN c'è un server DHCP, oppure un indirizzo **fisso** libero, con il prefisso della rete (es. `172.20.20.250/24`).",

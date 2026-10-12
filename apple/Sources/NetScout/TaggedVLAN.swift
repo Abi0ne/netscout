@@ -46,24 +46,26 @@ final class TaggedVLAN {
         let cidr: String
     }
 
-    var enabled: Bool {
-        didSet { Self.defaults.set(enabled, forKey: Keys.enabled); settingsChanged() }
+    /// Not remembered between launches: every session starts with the
+    /// option off and empty.
+    var enabled = false {
+        didSet { settingsChanged() }
     }
     /// The VLAN ID as written (1–4094).
-    var tag: String {
-        didSet { Self.defaults.set(tag, forKey: Keys.tag); settingsChanged() }
+    var tag = "" {
+        didSet { settingsChanged() }
     }
     /// The port the VLAN rides on: the scan's interface, when it can carry
     /// VLANs; `nil` hides the option.
     private(set) var parent: String? {
         didSet { settingsChanged() }
     }
-    var addressing: Addressing {
-        didSet { Self.defaults.set(addressing.rawValue, forKey: Keys.addressing); settingsChanged() }
+    var addressing = Addressing.dhcp {
+        didSet { settingsChanged() }
     }
     /// The manual address with its prefix, e.g. "172.20.20.250/24".
-    var address: String {
-        didSet { Self.defaults.set(address, forKey: Keys.address); settingsChanged() }
+    var address = "" {
+        didSet { settingsChanged() }
     }
 
     private(set) var active: Active?
@@ -74,21 +76,11 @@ final class TaggedVLAN {
     /// Deleting this file tells the root watcher to remove the interface.
     private var marker: URL?
 
-    private enum Keys {
-        static let enabled = "vlan.enabled"
-        static let tag = "vlan.tag"
-        static let addressing = "vlan.addressing"
-        static let address = "vlan.address"
-    }
-
-    private static var defaults: UserDefaults { .standard }
-
     init() {
-        let d = Self.defaults
-        enabled = d.bool(forKey: Keys.enabled)
-        tag = d.string(forKey: Keys.tag) ?? ""
-        addressing = d.string(forKey: Keys.addressing).flatMap(Addressing.init) ?? .dhcp
-        address = d.string(forKey: Keys.address) ?? ""
+        // Settings remembered by earlier builds.
+        for key in ["vlan.enabled", "vlan.tag", "vlan.addressing", "vlan.address", "vlan.parent"] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 
     /// The settings as written, or what is wrong with them.

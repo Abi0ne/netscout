@@ -307,9 +307,9 @@ private struct VLANOptions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle("Anche una VLAN taggata su \(vlan.parent ?? "")", isOn: $vlan.enabled)
+            Toggle("Enable VLAN scan", isOn: $vlan.enabled)
                 .toggleStyle(.checkbox)
-                .help("Questa porta Ethernet può ricevere VLAN taggate: scansiona anche una di quelle che arrivano sullo stesso cavo")
+                .help("\(vlan.parent ?? "Questa porta") può ricevere VLAN taggate: scansiona anche una di quelle che arrivano sullo stesso cavo")
             if vlan.enabled {
                 HStack(spacing: 6) {
                     TextField("Tag", text: $vlan.tag, prompt: Text("Tag"))
