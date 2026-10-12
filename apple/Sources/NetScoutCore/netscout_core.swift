@@ -579,6 +579,12 @@ public protocol ProfileStoreProtocol : AnyObject {
     func setNotes(id: String, notes: [String: String]) throws 
     
     /**
+     * Set the tagged VLAN of profile `id` (`None`: the scan had none).
+     * Separate from `save` and `update`, like the notes.
+     */
+    func setVlan(id: String, vlan: ProfileVlan?) throws 
+    
+    /**
      * Replace the devices of profile `id` with a newer scan, keeping its
      * name and creation date.
      */
@@ -707,6 +713,18 @@ open func setNotes(id: String, notes: [String: String])throws  {try rustCallWith
     uniffi_netscout_core_fn_method_profilestore_set_notes(self.uniffiClonePointer(),
         FfiConverterString.lower(id),
         FfiConverterDictionaryStringString.lower(notes),$0
+    )
+}
+}
+    
+    /**
+     * Set the tagged VLAN of profile `id` (`None`: the scan had none).
+     * Separate from `save` and `update`, like the notes.
+     */
+open func setVlan(id: String, vlan: ProfileVlan?)throws  {try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_set_vlan(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterOptionTypeProfileVlan.lower(vlan),$0
     )
 }
 }
@@ -1958,6 +1976,87 @@ public func FfiConverterTypeProfileSummary_lower(_ value: ProfileSummary) -> Rus
 
 
 /**
+ * A tagged VLAN scanned with a profile's target.
+ */
+public struct ProfileVlan {
+    /**
+     * The VLAN ID (1–4094).
+     */
+    public var tag: UInt16
+    /**
+     * The VLAN's network in CIDR form, e.g. "172.20.20.0/24".
+     */
+    public var network: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The VLAN ID (1–4094).
+         */tag: UInt16, 
+        /**
+         * The VLAN's network in CIDR form, e.g. "172.20.20.0/24".
+         */network: String) {
+        self.tag = tag
+        self.network = network
+    }
+}
+
+
+
+extension ProfileVlan: Equatable, Hashable {
+    public static func ==(lhs: ProfileVlan, rhs: ProfileVlan) -> Bool {
+        if lhs.tag != rhs.tag {
+            return false
+        }
+        if lhs.network != rhs.network {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(tag)
+        hasher.combine(network)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeProfileVlan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ProfileVlan {
+        return
+            try ProfileVlan(
+                tag: FfiConverterUInt16.read(from: &buf), 
+                network: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ProfileVlan, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.tag, into: &buf)
+        FfiConverterString.write(value.network, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileVlan_lift(_ buf: RustBuffer) throws -> ProfileVlan {
+    return try FfiConverterTypeProfileVlan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeProfileVlan_lower(_ value: ProfileVlan) -> RustBuffer {
+    return FfiConverterTypeProfileVlan.lower(value)
+}
+
+
+/**
  * Live progress of a running scan.
  */
 public struct Progress {
@@ -2093,6 +2192,11 @@ public struct SavedProfile {
      * The user's notes, by [`device_key`]. Never empty strings.
      */
     public var notes: [String: String]
+    /**
+     * The tagged VLAN the scan took in along with `target`, if any: its
+     * devices are told apart from the native network's by address.
+     */
+    public var vlan: ProfileVlan?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2118,7 +2222,11 @@ public struct SavedProfile {
          */updatedAt: Int64?, 
         /**
          * The user's notes, by [`device_key`]. Never empty strings.
-         */notes: [String: String]) {
+         */notes: [String: String], 
+        /**
+         * The tagged VLAN the scan took in along with `target`, if any: its
+         * devices are told apart from the native network's by address.
+         */vlan: ProfileVlan?) {
         self.id = id
         self.name = name
         self.createdAt = createdAt
@@ -2128,6 +2236,7 @@ public struct SavedProfile {
         self.offlineHosts = offlineHosts
         self.updatedAt = updatedAt
         self.notes = notes
+        self.vlan = vlan
     }
 }
 
@@ -2162,6 +2271,9 @@ extension SavedProfile: Equatable, Hashable {
         if lhs.notes != rhs.notes {
             return false
         }
+        if lhs.vlan != rhs.vlan {
+            return false
+        }
         return true
     }
 
@@ -2175,6 +2287,7 @@ extension SavedProfile: Equatable, Hashable {
         hasher.combine(offlineHosts)
         hasher.combine(updatedAt)
         hasher.combine(notes)
+        hasher.combine(vlan)
     }
 }
 
@@ -2194,7 +2307,8 @@ public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
                 hosts: FfiConverterSequenceTypeHost.read(from: &buf), 
                 offlineHosts: FfiConverterSequenceTypeHost.read(from: &buf), 
                 updatedAt: FfiConverterOptionInt64.read(from: &buf), 
-                notes: FfiConverterDictionaryStringString.read(from: &buf)
+                notes: FfiConverterDictionaryStringString.read(from: &buf), 
+                vlan: FfiConverterOptionTypeProfileVlan.read(from: &buf)
         )
     }
 
@@ -2208,6 +2322,7 @@ public struct FfiConverterTypeSavedProfile: FfiConverterRustBuffer {
         FfiConverterSequenceTypeHost.write(value.offlineHosts, into: &buf)
         FfiConverterOptionInt64.write(value.updatedAt, into: &buf)
         FfiConverterDictionaryStringString.write(value.notes, into: &buf)
+        FfiConverterOptionTypeProfileVlan.write(value.vlan, into: &buf)
     }
 }
 
@@ -3826,6 +3941,30 @@ fileprivate struct FfiConverterOptionTypeNetworkMatch: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeProfileVlan: FfiConverterRustBuffer {
+    typealias SwiftType = ProfileVlan?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeProfileVlan.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeProfileVlan.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeSsdpInfo: FfiConverterRustBuffer {
     typealias SwiftType = SsdpInfo?
 
@@ -4282,6 +4421,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_set_notes() != 7465) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_set_vlan() != 41028) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_update() != 58073) {

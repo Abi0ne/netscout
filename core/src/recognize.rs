@@ -186,6 +186,7 @@ mod tests {
             offline_hosts: vec![],
             updated_at: None,
             notes: HashMap::new(),
+            vlan: None,
         }
     }
 

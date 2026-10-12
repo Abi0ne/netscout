@@ -335,6 +335,11 @@ RustBuffer uniffi_netscout_core_fn_method_profilestore_save(void*_Nonnull ptr, R
 void uniffi_netscout_core_fn_method_profilestore_set_notes(void*_Nonnull ptr, RustBuffer id, RustBuffer notes, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_SET_VLAN
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_SET_VLAN
+void uniffi_netscout_core_fn_method_profilestore_set_vlan(void*_Nonnull ptr, RustBuffer id, RustBuffer vlan, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_UPDATE
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_UPDATE
 RustBuffer uniffi_netscout_core_fn_method_profilestore_update(void*_Nonnull ptr, RustBuffer id, RustBuffer target, RustBuffer scan_profile, RustBuffer hosts, RustBuffer offline_hosts, RustCallStatus *_Nonnull out_status
@@ -798,6 +803,12 @@ uint16_t uniffi_netscout_core_checksum_method_profilestore_save(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_SET_NOTES
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_SET_NOTES
 uint16_t uniffi_netscout_core_checksum_method_profilestore_set_notes(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_SET_VLAN
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_SET_VLAN
+uint16_t uniffi_netscout_core_checksum_method_profilestore_set_vlan(void
     
 );
 #endif

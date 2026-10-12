@@ -194,8 +194,11 @@ private struct ProfileDetailView: View {
     /// Shows only the devices matching it, when not empty.
     let query: String
     @ViewState private var selection: String?
+    /// Only the devices of one network (a profile with a tagged VLAN).
+    @ViewState private var segmentFilter: ScanSegment?
 
     private var profile: SavedProfile? { model.savedProfiles[summary.id] }
+    private var vlan: ScannedVLAN? { ScannedVLAN(profile?.vlan) }
     private var unsaved: Bool { model.hasUnsavedNotes(profile: summary.id) }
 
     var body: some View {
@@ -219,6 +222,11 @@ private struct ProfileDetailView: View {
                 }
             }
             .padding(16)
+            if vlan != nil {
+                segmentPicker
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
             Divider()
             HostTableView(
                 hosts: filtered(profile?.hosts ?? []),
@@ -227,15 +235,38 @@ private struct ProfileDetailView: View {
                 notes: NoteEditing(
                     note: { model.note(profile: summary.id, host: $0) },
                     setNote: { model.setNote($0, profile: summary.id, host: $1) }
-                )
+                ),
+                segment: vlan.map { vlan in { ScanSegment.of($0, vlan: vlan) } }
             )
         }
+        .onChange(of: summary.id) { segmentFilter = nil }
+    }
+
+    /// The profile's networks, as the scan's sidebar shows them: all, the
+    /// native one, the VLAN, off-network.
+    private var segmentPicker: some View {
+        let all = (profile?.hosts ?? []) + (profile?.offlineHosts ?? [])
+        let groups = ScanSegment.groups(all, vlan: vlan)
+        return Picker("Rete", selection: $segmentFilter) {
+            Text("Tutte (\(all.count))").tag(ScanSegment?.none)
+            ForEach(groups, id: \.segment) { entry in
+                Text("\(entry.segment.label) (\(entry.hosts.count))").tag(ScanSegment?.some(entry.segment))
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help(vlan.map { "Rete nativa \(summary.target.components(separatedBy: ", ").first ?? ""), VLAN \($0.tag) \($0.network)" } ?? "")
     }
 
     private func filtered(_ hosts: [Host]) -> [Host] {
-        guard !query.isEmpty else { return hosts }
-        return hosts.filter {
-            hostMatches(host: $0, note: model.note(profile: summary.id, host: $0), query: query)
+        hosts.filter { host in
+            let segment = ScanSegment.of(host, vlan: vlan)
+            if let segmentFilter, segment != segmentFilter { return false }
+            guard !query.isEmpty else { return true }
+            // "vlan 69" finds the VLAN's devices.
+            if let segment, segment.label.localizedCaseInsensitiveContains(query) { return true }
+            return hostMatches(host: host, note: model.note(profile: summary.id, host: host), query: query)
         }
     }
 }

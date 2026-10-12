@@ -261,17 +261,14 @@ final class ScanModel {
     /// Where `host` was found, when the last scan took in a tagged VLAN;
     /// `nil` for a plain scan.
     func segment(of host: Host) -> ScanSegment? {
-        guard let scannedVLAN else { return nil }
-        if host.offSubnet { return .offSubnet }
-        return scannedVLAN.network.contains(host.ip) ? .vlan(scannedVLAN.tag) : .native
+        ScanSegment.of(host, vlan: scannedVLAN)
     }
 
     /// The networks of the last scan with a tagged VLAN, in the sidebar's
     /// order, with their devices; empty for a plain scan.
     var segments: [(segment: ScanSegment, hosts: [Host])] {
         guard scannedVLAN != nil else { return [] }
-        let groups = Dictionary(grouping: hosts.values) { segment(of: $0) ?? .native }
-        return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
+        return ScanSegment.groups(Array(hosts.values), vlan: scannedVLAN)
     }
 
     /// The network a sidebar heading names: the target as written for the
@@ -401,6 +398,7 @@ extension ScanModel {
             // The notes shown with the scan go along with it.
             let notes = scanNotes
             if !notes.isEmpty { try profileStore.setNotes(id: saved.id, notes: notes) }
+            if let scannedVLAN { try profileStore.setVlan(id: saved.id, vlan: scannedVLAN.profileVLAN) }
             savedScanProfileID = saved.id
             refreshProfiles()
             return saved
@@ -635,6 +633,7 @@ extension ScanModel {
                 id: id, target: scannedTarget, scanProfile: scannedProfile,
                 hosts: sortedHosts, offlineHosts: sortedOfflineHosts
             )
+            try profileStore.setVlan(id: id, vlan: scannedVLAN?.profileVLAN)
             refreshProfiles()
             return true
         } catch {
@@ -729,6 +728,15 @@ struct ScannedVLAN: Equatable {
         tag = active.settings.tag
         network = cidr
     }
+
+    /// The one a saved profile recorded.
+    init?(_ saved: ProfileVlan?) {
+        guard let saved, let cidr = IPv4Interface(saved.network) else { return nil }
+        tag = Int(saved.tag)
+        network = cidr
+    }
+
+    var profileVLAN: ProfileVlan { ProfileVlan(tag: UInt16(tag), network: network.description) }
 }
 
 /// Where a device of a scan with a tagged VLAN was found: the network in
@@ -737,6 +745,20 @@ enum ScanSegment: Hashable, Comparable {
     case native
     case vlan(Int)
     case offSubnet
+
+    /// Where `host` was found, for a scan that took in `vlan`; `nil` without one.
+    static func of(_ host: Host, vlan: ScannedVLAN?) -> ScanSegment? {
+        guard let vlan else { return nil }
+        if host.offSubnet { return .offSubnet }
+        return vlan.network.contains(host.ip) ? .vlan(vlan.tag) : .native
+    }
+
+    /// `hosts` by network, in order; empty without a VLAN.
+    static func groups(_ hosts: [Host], vlan: ScannedVLAN?) -> [(segment: ScanSegment, hosts: [Host])] {
+        guard vlan != nil else { return [] }
+        let groups = Dictionary(grouping: hosts) { of($0, vlan: vlan) ?? .native }
+        return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
+    }
 
     var label: String {
         switch self {

@@ -54,6 +54,19 @@ pub struct SavedProfile {
     /// The user's notes, by [`device_key`]. Never empty strings.
     #[serde(default)]
     pub notes: HashMap<String, String>,
+    /// The tagged VLAN the scan took in along with `target`, if any: its
+    /// devices are told apart from the native network's by address.
+    #[serde(default)]
+    pub vlan: Option<ProfileVlan>,
+}
+
+/// A tagged VLAN scanned with a profile's target.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
+pub struct ProfileVlan {
+    /// The VLAN ID (1–4094).
+    pub tag: u16,
+    /// The VLAN's network in CIDR form, e.g. "172.20.20.0/24".
+    pub network: String,
 }
 
 /// A profile without its hosts, for listings.
@@ -171,6 +184,7 @@ impl ProfileStore {
             offline_hosts,
             updated_at: None,
             notes: HashMap::new(),
+            vlan: None,
         };
         self.write(&profile)?;
         Ok(ProfileSummary::from(&profile))
@@ -216,6 +230,14 @@ impl ProfileStore {
     ) -> Result<(), ScanError> {
         let mut profile = read_file(&self.path(&id)?)?;
         profile.notes = clean_notes(notes);
+        self.write(&profile)
+    }
+
+    /// Set the tagged VLAN of profile `id` (`None`: the scan had none).
+    /// Separate from `save` and `update`, like the notes.
+    pub fn set_vlan(self: Arc<Self>, id: String, vlan: Option<ProfileVlan>) -> Result<(), ScanError> {
+        let mut profile = read_file(&self.path(&id)?)?;
+        profile.vlan = vlan;
         self.write(&profile)
     }
 
@@ -721,6 +743,11 @@ mod tests {
         assert_eq!(list.len(), 1);
         let loaded = store.clone().load(saved.id.clone()).unwrap();
         assert_eq!(loaded.hosts[0].open_ports[0].number, 80);
+        assert_eq!(loaded.vlan, None);
+
+        let vlan = ProfileVlan { tag: 69, network: "172.20.20.0/24".into() };
+        store.clone().set_vlan(saved.id.clone(), Some(vlan.clone())).unwrap();
+        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlan, Some(vlan.clone()));
 
         store
             .clone()
@@ -742,6 +769,8 @@ mod tests {
         assert_eq!((updated.host_count, updated.offline_count), (0, 1));
         assert!(updated.updated_at.is_some());
         assert_eq!(updated.created_at, saved.created_at);
+        // An update leaves the VLAN to set_vlan.
+        assert_eq!(store.clone().load(saved.id.clone()).unwrap().vlan, Some(vlan));
 
         assert!(store.clone().load("../x".into()).is_err());
         store.clone().delete(saved.id).unwrap();
