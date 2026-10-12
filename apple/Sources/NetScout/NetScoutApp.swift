@@ -74,8 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // The root watcher would notice NetScout gone anyway; this is sooner.
-        MainActor.assumeIsolated { model?.vlan.deactivate() }
+        // The VLAN agent would notice NetScout gone anyway; this is sooner.
+        MainActor.assumeIsolated { model?.vlan.shutdown() }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

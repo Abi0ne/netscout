@@ -9,19 +9,23 @@ import SystemConfiguration
 /// It is offered when the interface chosen for the scan is an Ethernet port
 /// that can carry VLANs, and rides on that port.
 ///
-/// The Mac only sees a tagged VLAN through a VLAN interface of its own, and
-/// creating one needs an administrator: NetScout asks for the password once,
-/// creates `vlanN` on the chosen Ethernet port, gives it an address (from the
+/// Turning the option on listens to the port for a while: the tags of the
+/// frames other devices send there fill a menu, with the network and the
+/// devices seen in each VLAN (any tag can still be written by hand).
+///
+/// The Mac only sees a tagged VLAN through a VLAN interface of its own:
+/// NetScout creates `vlanN` on the port, gives it an address (from the
 /// VLAN's DHCP, or the one written here) and from then on scans the VLAN's
 /// network like any other. The interface stays up after the scan, so a deep
 /// scan or a terminal session to a device of the VLAN still works, until the
 /// option is turned off, its settings change or the app quits.
 ///
-/// The same privileged call leaves a small root watcher behind that removes
-/// the interface as soon as NetScout's marker file is deleted or NetScout's
-/// process is gone (even after a crash), so no second password is needed and
-/// nothing is left behind. An interface made this way is not a network
-/// service: the system settings are never touched, and a restart clears it.
+/// Listening and creating interfaces both need an administrator: they go
+/// through `VLANAgent`, started with the password the first time either is
+/// needed and kept until NetScout quits, so the password is asked once per
+/// session and nothing is left behind (even after a crash). An interface
+/// made this way is not a network service: the system settings are never
+/// touched, and a restart clears it.
 @MainActor
 @Observable
 final class TaggedVLAN {
@@ -49,16 +53,29 @@ final class TaggedVLAN {
     /// Not remembered between launches: every session starts with the
     /// option off and empty.
     var enabled = false {
-        didSet { settingsChanged() }
+        didSet {
+            guard enabled != oldValue else { return }
+            settingsChanged()
+            if enabled { discover() } else { stopDiscovery() }
+        }
     }
     /// The VLAN ID as written (1–4094).
     var tag = "" {
         didSet { settingsChanged() }
     }
+    /// The tag is written by hand ("Altro…" in the menu) rather than picked
+    /// among the VLANs heard on the cable.
+    var typingTag = false
     /// The port the VLAN rides on: the scan's interface, when it can carry
     /// VLANs; `nil` hides the option.
     private(set) var parent: String? {
-        didSet { settingsChanged() }
+        didSet {
+            guard parent != oldValue else { return }
+            settingsChanged()
+            discovered = []
+            discoveryProblem = nil
+            if enabled, parent != nil { discover() } else { stopDiscovery() }
+        }
     }
     var addressing = Addressing.dhcp {
         didSet { settingsChanged() }
@@ -73,19 +90,40 @@ final class TaggedVLAN {
     /// The ports of the Mac that can carry VLANs.
     private(set) var capable: Set<String> = []
 
-    /// Deleting this file tells the root watcher to remove the interface.
-    private var marker: URL?
+    /// The VLANs heard on the port, by tag.
+    private(set) var discovered: [DiscoveredVLAN] = []
+    private(set) var isDiscovering = false
+    /// Why the listening found nothing, if it did.
+    private(set) var discoveryProblem: String?
+    private var discovery: Task<Void, Never>?
+    /// How long a listening lasts.
+    static let listenSeconds = 30
+
+    private var agent: VLANAgent?
+    private var agentStarting: Task<VLANAgent, Error>?
 
     init() {
         // Settings remembered by earlier builds.
         for key in ["vlan.enabled", "vlan.tag", "vlan.addressing", "vlan.address", "vlan.parent"] {
             UserDefaults.standard.removeObject(forKey: key)
         }
+        // What earlier sessions left in the temporary folder: the commands
+        // directory of an agent long gone, markers of earlier builds.
+        let files = FileManager.default
+        let temporary = files.temporaryDirectory
+        for name in (try? files.contentsOfDirectory(atPath: temporary.path(percentEncoded: false))) ?? []
+        where name.hasPrefix("netscout-agent-") || name.hasPrefix("netscout-vlan-") {
+            try? files.removeItem(at: temporary.appending(path: name))
+        }
     }
 
     /// The settings as written, or what is wrong with them.
     var settings: Result<Settings, VLANError> {
-        guard let id = Int(tag.trimmingCharacters(in: .whitespaces)), (1...4094).contains(id) else {
+        let written = tag.trimmingCharacters(in: .whitespaces)
+        guard !written.isEmpty || typingTag else {
+            return .failure(.invalid("Scegli la VLAN dal menu."))
+        }
+        guard let id = Int(written), (1...4094).contains(id) else {
             return .failure(.invalid("Il tag VLAN va da 1 a 4094."))
         }
         guard let parent else {
@@ -94,7 +132,7 @@ final class TaggedVLAN {
         var settings = Settings(tag: id, parent: parent, addressing: addressing, address: nil)
         if addressing == .manual {
             guard let iface = IPv4Interface(address), iface.prefix <= 30 else {
-                return .failure(.invalid("Scrivi l'indirizzo con il prefisso, per esempio 172.20.20.250/24."))
+                return .failure(.invalid("Scrivi l'indirizzo con il prefisso, per esempio \(suggestedAddress ?? "172.20.20.250/24")."))
             }
             settings.address = iface
         }
@@ -110,6 +148,13 @@ final class TaggedVLAN {
         guard isOn, case .failure(let error) = settings else { return nil }
         return error.localizedDescription
     }
+
+    /// The chosen VLAN, as heard on the cable.
+    var chosen: DiscoveredVLAN? { discovered.first { String($0.tag) == tag } }
+
+    /// A fixed address to suggest in the chosen VLAN: .250 in the network
+    /// heard most.
+    var suggestedAddress: String? { chosen?.mainNetwork.map { "\($0).250/24" } }
 
     /// Re-read which ports can carry VLANs; a port that no longer can (the
     /// cable or the dock was unplugged) stops being the parent.
@@ -129,10 +174,60 @@ final class TaggedVLAN {
         parent = capable.contains(interface) || active?.settings.parent == interface ? interface : nil
     }
 
+    // MARK: Listening for VLANs
+
+    /// Listen to the port for `listenSeconds`, filling `discovered` as the
+    /// tags come (asking for the password if the agent is not running).
+    func discover() {
+        guard let parent else { return }
+        discovery?.cancel()
+        discovered = []
+        discoveryProblem = nil
+        isDiscovering = true
+        discovery = Task { [weak self] in
+            await self?.listen(on: parent)
+        }
+    }
+
+    private func listen(on parent: String) async {
+        do {
+            let agent = try await agentReady()
+            let path = try await agent.send(["listen", parent, String(Self.listenSeconds)])
+            debugLog("vlan listen on \(parent): \(path)")
+            let file = URL(filePath: path)
+            while !Task.isCancelled {
+                let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+                discovered = DiscoveredVLAN.parse(text)
+                if text.hasSuffix("end\n") || !agent.isAlive { break }
+                try await Task.sleep(for: .seconds(1))
+            }
+            guard !Task.isCancelled else { return }
+            if discovered.isEmpty {
+                discoveryProblem = "Nessuna VLAN taggata sentita su \(parent) in \(Self.listenSeconds) secondi: scegli Altro… per scrivere il tag."
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            discoveryProblem = (error as? VLANError) == .cancelled
+                ? "Ricerca delle VLAN annullata: password non inserita. Puoi scrivere il tag con Altro…"
+                : "Ricerca delle VLAN non riuscita: \((error as? VLANError)?.detail ?? error.localizedDescription)"
+        }
+        isDiscovering = false
+    }
+
+    func stopDiscovery() {
+        guard isDiscovering else { return }
+        discovery?.cancel()
+        discovery = nil
+        isDiscovering = false
+        if let agent { Task { _ = try? await agent.send(["quiet"]) } }
+    }
+
+    // MARK: The VLAN interface
+
     /// The VLAN interface up with the current settings: the one already
-    /// made, else a new one (asking for the administrator password).
-    /// `networks` are the other networks of the Mac: a VLAN network that
-    /// overlaps one of them is refused.
+    /// made, else a new one (asking for the administrator password if the
+    /// agent is not running). `networks` are the other networks of the
+    /// Mac: a VLAN network that overlaps one of them is refused.
     func prepare(networks: [NetworkInfo]) async throws -> Active {
         let settings = try settings.get()
         if let active, active.settings == settings { return active }
@@ -144,30 +239,23 @@ final class TaggedVLAN {
 
         isPreparing = true
         defer { isPreparing = false }
-        let marker = FileManager.default.temporaryDirectory
-            .appending(path: "netscout-vlan-\(UUID().uuidString)")
-        guard FileManager.default.createFile(atPath: marker.path(percentEncoded: false), contents: nil) else {
-            throw VLANError.failed("impossibile creare il file di controllo in \(marker.path(percentEncoded: false))")
-        }
-        let output: String
-        do {
-            output = try await Self.runPrivileged(Self.upCommand(settings, marker: marker))
-        } catch {
-            try? FileManager.default.removeItem(at: marker)
-            throw error
-        }
-        self.marker = marker
+        let agent = try await agentReady()
+        // DHCP: up to 30 s for the lease, 10 s for the address to settle.
+        let output = try await agent.send([
+            "up", String(settings.tag), settings.parent, settings.addressing.rawValue,
+            settings.address?.ip ?? "-", settings.address?.netmask ?? "-",
+        ], timeout: .seconds(60))
 
-        // The last line: "vlan0 172.20.20.250 0xffffff00".
-        let fields = output.split(separator: "\n").last?.split(separator: " ").map(String.init) ?? []
+        // "vlan0 172.20.20.250 0xffffff00".
+        let fields = output.split(separator: " ").map(String.init)
         guard fields.count == 3, let mask = UInt32(fields[2].dropFirst(2), radix: 16),
               let iface = IPv4Interface(fields[1] + "/\(mask.nonzeroBitCount)") else {
-            deactivate()
+            if let name = fields.first { _ = try? await agent.send(["down", name]) }
             throw VLANError.failed("risposta inattesa: \(output)")
         }
         let others = networks.filter { $0.interface != fields[0] }
         if let clash = Self.overlap(iface.network, others) {
-            deactivate()
+            _ = try? await agent.send(["down", fields[0]])
             throw VLANError.overlap(iface.network.description, clash)
         }
         let active = Active(settings: settings, interface: fields[0], ipv4: fields[1], cidr: iface.network.description)
@@ -176,12 +264,33 @@ final class TaggedVLAN {
         return active
     }
 
-    /// Remove the VLAN interface (the root watcher does it within a second).
+    /// Remove the VLAN interface.
     func deactivate() {
-        if let marker { try? FileManager.default.removeItem(at: marker) }
-        marker = nil
-        if let active { debugLog("vlan down: \(active.interface)") }
+        guard let active else { return }
+        debugLog("vlan down: \(active.interface)")
+        self.active = nil
+        if let agent { Task { _ = try? await agent.send(["down", active.interface]) } }
+    }
+
+    /// NetScout is quitting: the agent removes what it made and exits.
+    func shutdown() {
+        agent?.stop()
+        agent = nil
         active = nil
+    }
+
+    /// The running agent, else a new one (one password prompt at a time).
+    private func agentReady() async throws -> VLANAgent {
+        if let agent, agent.isAlive { return agent }
+        agent = nil
+        active = nil
+        if let agentStarting { return try await agentStarting.value }
+        let starting = Task { try await VLANAgent.start() }
+        agentStarting = starting
+        defer { agentStarting = nil }
+        let agent = try await starting.value
+        self.agent = agent
+        return agent
     }
 
     private func settingsChanged() {
@@ -198,106 +307,45 @@ final class TaggedVLAN {
             return net.address & mask == o.address & mask
         }.map { "\($0.interface) (\($0.cidr))" }
     }
+}
 
-    // MARK: - Privileged commands
+/// A VLAN heard on the cable: its tag, the devices that sent frames tagged
+/// with it and the networks of their addresses.
+struct DiscoveredVLAN: Identifiable, Equatable {
+    let tag: Int
+    /// Source MACs.
+    var devices: Set<String> = []
+    /// First three octets ("172.20.20") → frames seen, at least.
+    var networks: [String: Int] = [:]
 
-    /// Creates the interface, addresses it and leaves the watcher; prints
-    /// "<interface> <address> <hex netmask>". Arguments: parent, tag, mode,
-    /// address, netmask, marker file, NetScout's pid. No single quotes in
-    /// here: it is passed to `sh -c` inside them.
-    private static let upScript = #"""
-        parent=$1; tag=$2; mode=$3; addr=$4; mask=$5; marker=$6; app=$7
-        busy=""
-        for attempt in 1 2 3 4 5; do
-          busy=""
-          for v in $(ifconfig -l); do
-            case $v in vlan*) ifconfig $v | grep -q "vlan: $tag parent interface: $parent$" && busy=$v ;; esac
-          done
-          [ -z "$busy" ] && break
-          sleep 1
-        done
-        if [ -n "$busy" ]; then echo "la VLAN $tag su $parent esiste già ($busy)" >&2; exit 3; fi
-        n=0
-        while ifconfig vlan$n >/dev/null 2>&1; do n=$((n+1)); done
-        if=vlan$n
-        down() { ipconfig set $if NONE >/dev/null 2>&1; ifconfig $if destroy; }
-        ifconfig $if create || exit 1
-        if ! ifconfig $if vlan $tag vlandev $parent || ! ifconfig $if up; then down; exit 1; fi
-        if [ "$mode" = dhcp ]; then
-          ipconfig set $if DHCP
-          ip=""; i=0
-          while [ -z "$ip" ] && [ $i -lt 30 ]; do sleep 1; ip=$(ipconfig getifaddr $if); i=$((i+1)); done
-          if [ -z "$ip" ]; then down; echo "nessuna risposta dal DHCP della VLAN $tag in 30 secondi" >&2; exit 4; fi
-          m=$(ipconfig getoption $if subnet_mask)
-          # Keep the leased address but drop router and DNS: the VLAN must
-          # never take over the default route or the name servers.
-          ipconfig set $if MANUAL $ip $m
-          i=0
-          while ! ifconfig $if | grep -q "inet $ip " && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done
-        elif ! ifconfig $if inet $addr netmask $mask; then
-          down; exit 1
-        fi
-        # The administrator prompt signals what the command leaves behind
-        # once it returns (nohup alone is not enough): the watcher ignores
-        # HUP, INT and TERM, which carries over to the shell exec runs.
-        ( trap "" HUP INT TERM; exec /bin/sh -c "while kill -0 $app 2>/dev/null && [ -e $marker ]; do sleep 1; done; ipconfig set $if NONE; ifconfig $if destroy" ) </dev/null >/dev/null 2>&1 &
-        # Not inside "$(...)": there the bash 3.2 behind sh brace-expands the
-        # comma in the awk program and splits it in two.
-        inet=$(ifconfig $if | awk "/inet /{print \$2, \$4; exit}")
-        echo "$if $inet"
-        """#
+    var id: Int { tag }
 
-    private static func upCommand(_ settings: Settings, marker: URL) -> String {
-        let args = [
-            settings.parent,
-            String(settings.tag),
-            settings.addressing.rawValue,
-            settings.address?.ip ?? "-",
-            settings.address?.netmask ?? "-",
-            marker.path(percentEncoded: false),
-            String(ProcessInfo.processInfo.processIdentifier),
-        ]
-        assert(!upScript.contains("'"), "upScript is passed inside single quotes")
-        // Every argument is a validated name, number or address, or a path
-        // in the user's temporary folder; quoted anyway.
-        return "/bin/sh -c '\(upScript)' netscout-vlan " + args.map { "'\($0)'" }.joined(separator: " ")
+    /// The network heard most, as its first three octets.
+    var mainNetwork: String? { networks.max { $0.value < $1.value }?.key }
+
+    /// "VLAN 69 · 172.20.20.x · 4 dispositivi".
+    var label: String {
+        let count = devices.count == 1 ? "1 dispositivo" : "\(devices.count) dispositivi"
+        return (["VLAN \(tag)"] + (mainNetwork.map { ["\($0).x"] } ?? []) + [count]).joined(separator: " · ")
     }
 
-    /// Run `command` as root through the system's administrator prompt.
-    private static func runPrivileged(_ command: String) async throws -> String {
-        let escaped = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "do shell script \"\(escaped)\" with administrator privileges without altering line endings "
-            + "with prompt \"NetScout deve creare un'interfaccia VLAN per scansionare la rete taggata.\""
-        return try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            process.executableURL = URL(filePath: "/usr/bin/osascript")
-            process.arguments = ["-e", script]
-            let out = Pipe(), err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-            process.terminationHandler = { p in
-                let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                if p.terminationStatus == 0 {
-                    continuation.resume(returning: stdout.trimmingCharacters(in: .whitespacesAndNewlines))
-                } else if stderr.contains("-128") {
-                    continuation.resume(throwing: VLANError.cancelled)
-                } else {
-                    // "osascript: … execution error: <message> (<code>)"
-                    var message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let r = message.range(of: "execution error: ") { message = String(message[r.upperBound...]) }
-                    if let r = message.range(of: #"\s*\(-?\d+\)$"#, options: .regularExpression) { message.removeSubrange(r) }
-                    continuation.resume(throwing: VLANError.failed(message))
-                }
+    /// The agent's summary lines ("mac TAG MAC", "net TAG A.B.C COUNT"),
+    /// by tag.
+    static func parse(_ text: String) -> [DiscoveredVLAN] {
+        var byTag: [Int: DiscoveredVLAN] = [:]
+        for line in text.split(separator: "\n") {
+            let f = line.split(separator: " ").map(String.init)
+            guard f.count >= 3, let tag = Int(f[1]), (1...4094).contains(tag) else { continue }
+            var vlan = byTag[tag] ?? DiscoveredVLAN(tag: tag)
+            switch f[0] {
+            case "mac": vlan.devices.insert(f[2])
+            case "net" where f.count >= 4: vlan.networks[f[2]] = max(vlan.networks[f[2]] ?? 0, Int(f[3]) ?? 0)
+            case "frames": break
+            default: continue
             }
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: VLANError.failed("\(error)"))
-            }
+            byTag[tag] = vlan
         }
+        return byTag.values.sorted { $0.tag < $1.tag }
     }
 }
 
@@ -314,6 +362,11 @@ enum VLANError: LocalizedError, Equatable {
         case .overlap(let net, let other): "La rete della VLAN, \(net), si sovrappone a \(other): è già raggiungibile senza VLAN."
         case .failed(let message): "Impossibile attivare la VLAN: \(message)"
         }
+    }
+
+    /// The message without "Impossibile attivare la VLAN".
+    var detail: String {
+        if case .failed(let message) = self { message } else { errorDescription ?? "" }
     }
 }
 

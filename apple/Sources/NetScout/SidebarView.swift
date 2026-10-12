@@ -359,6 +359,20 @@ struct SidebarView: View {
 private struct VLANOptions: View {
     @Bindable var vlan: TaggedVLAN
 
+    /// The menu's "Altro…": the tag is written by hand.
+    private static let other = "other"
+
+    /// The menu's choice: a tag heard on the cable, "Altro…", or nothing yet.
+    private var choice: Binding<String> {
+        Binding(
+            get: { vlan.typingTag ? Self.other : vlan.tag },
+            set: { value in
+                vlan.typingTag = value == Self.other
+                if value != Self.other { vlan.tag = value }
+            }
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Toggle("Enable VLAN scan", isOn: $vlan.enabled)
@@ -366,20 +380,49 @@ private struct VLANOptions: View {
                 .help("\(vlan.parent ?? "Questa porta") può ricevere VLAN taggate: scansiona anche una di quelle che arrivano sullo stesso cavo")
             if vlan.enabled {
                 HStack(spacing: 6) {
-                    TextField("Tag", text: $vlan.tag, prompt: Text("Tag"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 54)
-                        .help("ID della VLAN (1–4094)")
-                    Picker("Indirizzo", selection: $vlan.addressing) {
-                        Text("DHCP").tag(TaggedVLAN.Addressing.dhcp)
-                        Text("Fisso").tag(TaggedVLAN.Addressing.manual)
+                    Picker("VLAN", selection: choice) {
+                        if vlan.tag.isEmpty && !vlan.typingTag {
+                            Text(vlan.isDiscovering ? "Ricerca delle VLAN…" : "Scegli la VLAN").tag("")
+                        } else if !vlan.typingTag && vlan.chosen == nil {
+                            // Chosen earlier, not heard in this listening.
+                            Text("VLAN \(vlan.tag)").tag(vlan.tag)
+                        }
+                        ForEach(vlan.discovered) { found in
+                            Text(found.label).tag(String(found.tag))
+                        }
+                        Divider()
+                        Text("Altro…").tag(Self.other)
                     }
-                    .pickerStyle(.segmented)
                     .labelsHidden()
-                    .help("Come ottenere un indirizzo nella VLAN: dal suo DHCP o uno fisso scritto qui")
+                    .help("Le VLAN sentite sul cavo, con la rete e i dispositivi visti in ciascuna; Altro… per scrivere il tag")
+                    if vlan.isDiscovering {
+                        ProgressView()
+                            .controlSize(.small)
+                            .help("In ascolto su \(vlan.parent ?? "") per \(TaggedVLAN.listenSeconds) secondi")
+                    } else {
+                        Button {
+                            vlan.discover()
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Ascolta di nuovo il cavo per \(TaggedVLAN.listenSeconds) secondi")
+                    }
                 }
+                if vlan.typingTag {
+                    TextField("Tag", text: $vlan.tag, prompt: Text("Tag (1–4094)"))
+                        .textFieldStyle(.roundedBorder)
+                        .help("ID della VLAN (1–4094)")
+                }
+                Picker("Indirizzo", selection: $vlan.addressing) {
+                    Text("DHCP").tag(TaggedVLAN.Addressing.dhcp)
+                    Text("Fisso").tag(TaggedVLAN.Addressing.manual)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .help("Come ottenere un indirizzo nella VLAN: dal suo DHCP o uno fisso scritto qui")
                 if vlan.addressing == .manual {
-                    TextField("Indirizzo", text: $vlan.address, prompt: Text("172.20.20.250/24"))
+                    TextField("Indirizzo", text: $vlan.address, prompt: Text(vlan.suggestedAddress ?? "172.20.20.250/24"))
                         .textFieldStyle(.roundedBorder)
                         .help("Un indirizzo libero nella VLAN, con il prefisso della sua rete")
                 }
@@ -395,9 +438,7 @@ private struct VLANOptions: View {
 
     @ViewBuilder
     private var status: some View {
-        if let problem = vlan.problem {
-            Text(problem).foregroundStyle(.orange)
-        } else if let active = vlan.active {
+        if let active = vlan.active {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 Text("\(active.interface) · \(active.ipv4) · rete \(active.cidr)")
@@ -411,8 +452,15 @@ private struct VLANOptions: View {
         } else if vlan.isPreparing {
             Text(vlan.addressing == .dhcp ? "Creazione dell'interfaccia e richiesta al DHCP…" : "Creazione dell'interfaccia…")
                 .foregroundStyle(.secondary)
+        } else if vlan.isDiscovering {
+            Text("In ascolto su \(vlan.parent ?? "") per \(TaggedVLAN.listenSeconds) secondi: \(vlan.discovered.count == 1 ? "1 VLAN trovata" : "\(vlan.discovered.count) VLAN trovate") finora.")
+                .foregroundStyle(.secondary)
+        } else if let problem = vlan.discoveryProblem {
+            Text(problem).foregroundStyle(.orange)
+        } else if let problem = vlan.problem {
+            Text(problem).foregroundStyle(.orange)
         } else {
-            Text("All'avvio NetScout chiede la password di amministratore per creare l'interfaccia della VLAN; la rimuove quando la disattivi o chiudi l'app.")
+            Text("NetScout crea l'interfaccia della VLAN all'avvio della scansione e la rimuove quando la disattivi o chiudi l'app. La password di amministratore si chiede una volta sola.")
                 .foregroundStyle(.secondary)
         }
     }
