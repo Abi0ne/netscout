@@ -97,6 +97,14 @@ struct ProfilesDetail: View {
                 .disabled(model.selectedProfileID == nil || !model.hasFinishedScan)
             }
             ToolbarItem {
+                Button {
+                    importProfiles(model: model)
+                } label: {
+                    Label("Importa CSV", systemImage: "square.and.arrow.down")
+                }
+                .help("Ricrea i profili da un file CSV esportato da NetScout, con note e VLAN")
+            }
+            ToolbarItem {
                 Menu {
                     if let id = model.selectedProfileID,
                        let profile = model.profiles.first(where: { $0.id == id }) {
@@ -159,6 +167,17 @@ private func exportProfiles(_ ids: [String], name: String, model: ScanModel) {
     } catch {
         model.errorMessage = "Esportazione non riuscita: \(error.localizedDescription)"
     }
+}
+
+/// Ask for CSV files exported by NetScout and add their profiles.
+@MainActor
+private func importProfiles(model: ScanModel) {
+    let panel = NSOpenPanel()
+    panel.title = "Importa profili da CSV"
+    panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+    panel.allowsMultipleSelection = true
+    guard panel.runModal() == .OK else { return }
+    model.importProfiles(from: panel.urls)
 }
 
 private struct ProfileRow: View {

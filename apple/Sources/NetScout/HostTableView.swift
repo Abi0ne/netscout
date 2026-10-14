@@ -130,7 +130,13 @@ struct HostTableView: View {
             }
         }
         .contextMenu(forSelectionType: String.self) { ids in
+            if let id = ids.first, let host = rows.first(where: { $0.id == id })?.host {
+                Button("Copia indirizzo IP") { copy(host.ip) }
+                Button("Copia indirizzo MAC") { copy(host.mac ?? "") }
+                    .disabled(host.mac == nil)
+            }
             if let forgetOffline, let id = ids.first, id.hasPrefix("off-") {
+                Divider()
                 Button("Dimentica dispositivo spento") { forgetOffline(id) }
             }
         }
@@ -142,6 +148,11 @@ struct HostTableView: View {
             contentWidth: { fitWidth($0) },
             addSort: { sortKeys = Self.sort(sortKeys, clicking: $0, adding: true) }
         ))
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     // MARK: Sorting

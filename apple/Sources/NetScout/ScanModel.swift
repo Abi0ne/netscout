@@ -628,6 +628,44 @@ extension ScanModel {
     }
 }
 
+// MARK: - CSV import
+
+extension ScanModel {
+    /// Add the profiles of the CSV files `urls` and select the first one.
+    func importProfiles(from urls: [URL]) {
+        guard let profileStore else { return }
+        var imported: [ProfileSummary] = []
+        var skipped: [String] = []
+        var failed: [String] = []
+        for url in urls {
+            do {
+                let data = try Data(contentsOf: url)
+                // As exported (UTF-8); a spreadsheet may save it in its own encoding.
+                let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+                let result = try profileStore.importCsv(csv: text)
+                imported += result.imported
+                skipped += result.skipped
+            } catch ScanError.InvalidConfig(_) {
+                failed.append("«\(url.lastPathComponent)» non è un CSV esportato da NetScout.")
+            } catch {
+                failed.append("«\(url.lastPathComponent)»: \(error.localizedDescription)")
+            }
+        }
+        refreshProfiles()
+        if let first = imported.first {
+            selectedProfileID = first.id
+        }
+        var message: [String] = failed
+        if !skipped.isEmpty {
+            message.append("Già presenti, non importati: \(skipped.map { "«\($0)»" }.joined(separator: ", ")).")
+        }
+        if !message.isEmpty {
+            if !imported.isEmpty { message.insert("Profili importati: \(imported.count).", at: 0) }
+            errorMessage = message.joined(separator: "\n")
+        }
+    }
+}
+
 // MARK: - Devices that are off
 
 extension ScanModel {

@@ -305,6 +305,11 @@ void uniffi_netscout_core_fn_free_profilestore(void*_Nonnull ptr, RustCallStatus
 void uniffi_netscout_core_fn_method_profilestore_delete(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_IMPORT_CSV
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_IMPORT_CSV
+RustBuffer uniffi_netscout_core_fn_method_profilestore_import_csv(void*_Nonnull ptr, RustBuffer csv, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_LIST
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_METHOD_PROFILESTORE_LIST
 RustBuffer uniffi_netscout_core_fn_method_profilestore_list(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
@@ -767,6 +772,12 @@ uint16_t uniffi_netscout_core_checksum_func_recognize_network(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_DELETE
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_DELETE
 uint16_t uniffi_netscout_core_checksum_method_profilestore_delete(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_IMPORT_CSV
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_METHOD_PROFILESTORE_IMPORT_CSV
+uint16_t uniffi_netscout_core_checksum_method_profilestore_import_csv(void
     
 );
 #endif

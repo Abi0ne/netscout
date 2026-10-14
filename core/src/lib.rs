@@ -17,7 +17,8 @@
 //!   `diff_hosts` compares a scan with a saved profile (`ScanDiff`, `HostChange`);
 //!   `match_profile`/`host_matches` search profiles (notes by `device_key`);
 //!   `recognize_network` finds the profile of the network being scanned
-//!   (`NetworkMatch`); `profiles_csv` exports profiles as CSV.
+//!   (`NetworkMatch`); `profiles_csv` exports profiles as CSV and
+//!   `ProfileStore::import_csv` reads them back.
 //! * [`ScanError`] — the FFI error enum.
 //! * Records: `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`,
 //!   `Progress`, `Summary`, `DeviceTypeCount`.
@@ -33,6 +34,7 @@
 //!   `ScanError` type; no raw pointers or unwinds ever cross the boundary.
 
 pub mod classify;
+pub mod csv_import;
 mod deep_names;
 mod engine;
 pub mod error;
@@ -55,7 +57,7 @@ pub use error::ScanError;
 pub use export::profiles_csv;
 pub use platform::requires_multicast_lock;
 pub use profiles::{
-    device_key, diff_hosts, host_matches, match_profile, open_profile_store, HostChange,
+    device_key, diff_hosts, CsvImport, host_matches, match_profile, open_profile_store, HostChange,
     ProfileMatch, ProfileStore, ProfileSummary, SavedProfile, ScanDiff,
 };
 pub use recognize::{recognize_network, NetworkMatch};

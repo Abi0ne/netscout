@@ -6,24 +6,32 @@
 //! when they hold the separator, a quote, a line break or surrounding blanks,
 //! and text starting like a formula (`=`, `+`, `-`, `@`) gets a leading `'`,
 //! since names and notes can come from devices on the network.
+//!
+//! The file carries what [`crate::csv_import`] needs to rebuild the
+//! profiles: the profile's tagged VLANs ("VLAN del profilo", e.g.
+//! "69 172.20.20.0/24, 70 10.0.70.0/24") and each device's network ("VLAN":
+//! Nativa, the tag or Fuori rete).
 
-use crate::profiles::{device_key, SavedProfile};
+use crate::profiles::{device_key, ProfileVlan, SavedProfile};
 use crate::types::{DeviceType, Host, PortState, ScanProfile, Transport};
 
 const SEPARATOR: char = ';';
 
-const HEADER: [&str; 17] = [
+const HEADER: [&str; 20] = [
     "Profilo",
     "Rete scansionata",
+    "VLAN del profilo",
     "Tipo di scansione",
     "Salvato il",
     "Aggiornato il",
     "Stato",
     "IP",
+    "VLAN",
     "Nome",
     "Altri nomi",
     "Tipo",
     "Produttore",
+    "Modello",
     "MAC",
     "Latenza (ms)",
     "Porte aperte",
@@ -42,6 +50,11 @@ pub fn profiles_csv(profiles: &[SavedProfile]) -> String {
         let head = [
             p.name.clone(),
             p.target.clone(),
+            p.vlans
+                .iter()
+                .map(|v| format!("{} {}", v.tag, v.network))
+                .collect::<Vec<_>>()
+                .join(", "),
             scan_label(p.scan_profile).into(),
             local_time(p.created_at),
             p.updated_at.map(local_time).unwrap_or_default(),
@@ -58,21 +71,58 @@ pub fn profiles_csv(profiles: &[SavedProfile]) -> String {
                 &mut out,
                 head.iter()
                     .cloned()
-                    .chain(std::iter::repeat_n(String::new(), 12)),
+                    .chain(std::iter::repeat_n(String::new(), 14)),
             );
         }
         for (host, off) in devices {
             let note = p.notes.get(&device_key(host)).cloned().unwrap_or_default();
             push_row(
                 &mut out,
-                head.iter().cloned().chain(device_fields(host, off, note)),
+                head.iter()
+                    .cloned()
+                    .chain(device_fields(host, off, segment(host, &p.vlans), note)),
             );
         }
     }
     out
 }
 
-fn device_fields(h: &Host, off: bool, note: String) -> [String; 12] {
+/// Where `host` was found, as the apps' "VLAN" column says it: empty for a
+/// profile without VLANs (unless the device is off-network).
+fn segment(host: &Host, vlans: &[ProfileVlan]) -> String {
+    if host.off_subnet {
+        return OFF_SUBNET.into();
+    }
+    if vlans.is_empty() {
+        return String::new();
+    }
+    let ip = ip_key(&host.ip);
+    vlans
+        .iter()
+        .find(|v| cidr_contains(&v.network, ip))
+        .map(|v| v.tag.to_string())
+        .unwrap_or_else(|| NATIVE.into())
+}
+
+pub(crate) const NATIVE: &str = "Nativa";
+pub(crate) const OFF_SUBNET: &str = "Fuori rete";
+
+/// Whether `ip` (as from `ip_key`) is in `cidr` ("172.20.20.0/24").
+fn cidr_contains(cidr: &str, ip: u32) -> bool {
+    let Some((net, len)) = cidr.split_once('/') else {
+        return false;
+    };
+    let (Ok(net), Ok(len)) = (net.parse::<std::net::Ipv4Addr>(), len.parse::<u32>()) else {
+        return false;
+    };
+    if len > 32 || ip == u32::MAX {
+        return false;
+    }
+    let mask = if len == 0 { 0 } else { u32::MAX << (32 - len) };
+    u32::from(net) & mask == ip & mask
+}
+
+fn device_fields(h: &Host, off: bool, segment: String, note: String) -> [String; 14] {
     let names: Vec<String> = h
         .hostnames
         .iter()
@@ -102,10 +152,12 @@ fn device_fields(h: &Host, off: bool, note: String) -> [String; 12] {
     [
         if off { "Spento" } else { "Acceso" }.into(),
         h.ip.clone(),
+        segment,
         names.first().cloned().unwrap_or_default(),
         names.get(1..).unwrap_or_default().join(", "),
         type_label(h.device_type).into(),
         h.vendor.clone().unwrap_or_default(),
+        h.model.clone().unwrap_or_default(),
         h.mac.clone().unwrap_or_default(),
         match (off, h.rtt_ms) {
             (false, Some(ms)) => format!("{ms:.1}").replace('.', ","),
@@ -166,13 +218,13 @@ fn local_time(epoch_ms: i64) -> String {
     )
 }
 
-fn ip_key(ip: &str) -> u32 {
+pub(crate) fn ip_key(ip: &str) -> u32 {
     ip.parse::<std::net::Ipv4Addr>()
         .map(u32::from)
         .unwrap_or(u32::MAX)
 }
 
-fn scan_label(p: ScanProfile) -> &'static str {
+pub(crate) fn scan_label(p: ScanProfile) -> &'static str {
     match p {
         ScanProfile::Quick => "Rapida",
         ScanProfile::Standard => "Standard",
@@ -181,7 +233,7 @@ fn scan_label(p: ScanProfile) -> &'static str {
 }
 
 /// The apps' names for the device types.
-fn type_label(t: DeviceType) -> &'static str {
+pub(crate) fn type_label(t: DeviceType) -> &'static str {
     match t {
         DeviceType::Router => "Rete",
         DeviceType::Modem => "Modem",
@@ -273,9 +325,9 @@ mod tests {
         assert!(csv.starts_with("\u{feff}Profilo;Rete scansionata;"));
         let lines: Vec<&str> = csv.trim_start_matches('\u{feff}').split("\r\n").collect();
         assert_eq!(lines.len(), 4, "{csv}"); // header, device, empty profile, ""
-        assert!(lines[1].starts_with("Ufficio;10.0.0.0/24;Approfondita;"));
+        assert!(lines[1].starts_with("Ufficio;10.0.0.0/24;;Approfondita;"));
         assert!(lines[1].ends_with(
-            ";Acceso;10.0.0.2;nas;nas.lan;NAS;\"Società; S.p.A.\";AA:00:00:00:00:02;1,2;445 smb;;;\"Armadio \"\"rack\"\" piano 1\""
+            ";Acceso;10.0.0.2;;nas;nas.lan;NAS;\"Società; S.p.A.\";;AA:00:00:00:00:02;1,2;445 smb;;;\"Armadio \"\"rack\"\" piano 1\""
         ), "{}", lines[1]);
         assert_eq!(lines[2].matches(';').count(), HEADER.len() - 1);
         assert_eq!(lines[3], "");

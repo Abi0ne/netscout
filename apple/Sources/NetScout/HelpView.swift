@@ -169,6 +169,7 @@ struct HelpTopic: Identifiable {
             ]),
             .heading("Dispositivi spenti"),
             .text("Dopo un confronto con un profilo puoi aggiungere alla tabella i dispositivi salvati ma non trovati: compaiono in grigio, in fondo, con l'etichetta **Spento**. Dal menu contestuale (clic destro) puoi toglierli dall'elenco."),
+            .text("Il clic destro su un dispositivo, nella scansione o in un profilo, offre anche **Copia indirizzo IP** e **Copia indirizzo MAC**."),
         ]),
         HelpTopic(title: "Scheda del dispositivo", symbol: "sidebar.right", blocks: [
             .text("Seleziona un dispositivo per aprire la sua scheda a destra. Il pulsante con l'icona del pannello, in alto a destra dopo il campo di ricerca, la mostra o la nasconde."),
@@ -242,8 +243,9 @@ struct HelpTopic: Identifiable {
                 "Contano solo identificatori stabili: il MAC assegnato dal produttore e, se il MAC manca, l'identificativo UPnP. IP, nomi e MAC privati (telefoni, tablet) non vengono usati.",
                 "Se due profili di reti diverse corrispondono allo stesso modo, NetScout non propone nulla.",
             ]),
-            .heading("Esportare in CSV"),
-            .text("Il pulsante **Esporta CSV** in alto (o il clic destro su un profilo) salva un file con un dispositivo per riga: profilo, rete, date, stato, IP, nomi, tipo, produttore, MAC, latenza, porte aperte, servizi e note. Il file usa il punto e virgola come separatore e si apre direttamente in Excel o Numeri con le lettere accentate corrette."),
+            .heading("Esportare e importare in CSV"),
+            .text("Il pulsante **Esporta CSV** in alto (o il clic destro su un profilo) salva un file con un dispositivo per riga: profilo, rete, VLAN del profilo, date, stato, IP, VLAN del dispositivo, nomi, tipo, produttore, modello, MAC, latenza, porte aperte, servizi e note. Il file usa il punto e virgola come separatore e si apre direttamente in Excel o Numeri con le lettere accentate corrette."),
+            .text("Il pulsante **Importa CSV** fa il contrario: legge uno o più file esportati da NetScout (anche su un altro Mac) e ricrea ogni profilo com'era, con i dispositivi accesi e spenti, le note, le date e tutte le sue VLAN. Un profilo già presente (stesso nome, salvato nello stesso minuto) non viene importato due volte. L'identificativo UPnP non è nel CSV: finché non lo aggiorni con una nuova scansione, un profilo importato viene riconosciuto solo dai MAC."),
         ]),
         HelpTopic(title: "Integrazioni", symbol: "puzzlepiece.extension", blocks: [
             .text("Le integrazioni si gestiscono in **NetScout → Impostazioni… → Integrazioni**."),

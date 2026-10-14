@@ -552,6 +552,13 @@ public protocol ProfileStoreProtocol : AnyObject {
     func delete(id: String) throws 
     
     /**
+     * Add the profiles of `csv`, a file exported by NetScout, with their
+     * devices, notes and VLANs. A profile already here (same name, saved
+     * the same minute) is skipped.
+     */
+    func importCsv(csv: String) throws  -> CsvImport
+    
+    /**
      * Every readable profile, newest first. Unreadable files are skipped.
      */
     func list() throws  -> [ProfileSummary]
@@ -650,6 +657,19 @@ open func delete(id: String)throws  {try rustCallWithError(FfiConverterTypeScanE
         FfiConverterString.lower(id),$0
     )
 }
+}
+    
+    /**
+     * Add the profiles of `csv`, a file exported by NetScout, with their
+     * devices, notes and VLANs. A profile already here (same name, saved
+     * the same minute) is skipped.
+     */
+open func importCsv(csv: String)throws  -> CsvImport {
+    return try  FfiConverterTypeCsvImport.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_import_csv(self.uniffiClonePointer(),
+        FfiConverterString.lower(csv),$0
+    )
+})
 }
     
     /**
@@ -1063,6 +1083,87 @@ public func FfiConverterTypeScanner_lift(_ pointer: UnsafeMutableRawPointer) thr
 #endif
 public func FfiConverterTypeScanner_lower(_ value: Scanner) -> UnsafeMutableRawPointer {
     return FfiConverterTypeScanner.lower(value)
+}
+
+
+/**
+ * What [`ProfileStore::import_csv`] did.
+ */
+public struct CsvImport {
+    /**
+     * The profiles added, in the file's order.
+     */
+    public var imported: [ProfileSummary]
+    /**
+     * Names of the profiles left out because they were already saved.
+     */
+    public var skipped: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The profiles added, in the file's order.
+         */imported: [ProfileSummary], 
+        /**
+         * Names of the profiles left out because they were already saved.
+         */skipped: [String]) {
+        self.imported = imported
+        self.skipped = skipped
+    }
+}
+
+
+
+extension CsvImport: Equatable, Hashable {
+    public static func ==(lhs: CsvImport, rhs: CsvImport) -> Bool {
+        if lhs.imported != rhs.imported {
+            return false
+        }
+        if lhs.skipped != rhs.skipped {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(imported)
+        hasher.combine(skipped)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsvImport: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsvImport {
+        return
+            try CsvImport(
+                imported: FfiConverterSequenceTypeProfileSummary.read(from: &buf), 
+                skipped: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsvImport, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeProfileSummary.write(value.imported, into: &buf)
+        FfiConverterSequenceString.write(value.skipped, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsvImport_lift(_ buf: RustBuffer) throws -> CsvImport {
+    return try FfiConverterTypeCsvImport.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsvImport_lower(_ value: CsvImport) -> RustBuffer {
+    return FfiConverterTypeCsvImport.lower(value)
 }
 
 
@@ -4406,6 +4507,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_delete() != 27973) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_method_profilestore_import_csv() != 60924) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_list() != 50948) {
