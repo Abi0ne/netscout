@@ -98,15 +98,6 @@ impl From<&SavedProfile> for ProfileSummary {
     }
 }
 
-/// What [`ProfileStore::import_csv`] did.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct CsvImport {
-    /// The profiles added, in the file's order.
-    pub imported: Vec<ProfileSummary>,
-    /// Names of the profiles left out because they were already saved.
-    pub skipped: Vec<String>,
-}
-
 /// On-disk envelope.
 #[derive(Serialize, Deserialize)]
 struct ProfileFile {
@@ -254,28 +245,31 @@ impl ProfileStore {
         self.write(&profile)
     }
 
-    /// Add the profiles of `csv`, a file exported by NetScout, with their
-    /// devices, notes and VLANs. A profile already here (same name, saved
-    /// the same minute) is skipped.
-    pub fn import_csv(self: Arc<Self>, csv: String) -> Result<CsvImport, ScanError> {
-        let existing = self.clone().list()?;
-        let mut result = CsvImport { imported: Vec::new(), skipped: Vec::new() };
-        for mut profile in crate::csv_import::parse_profiles_csv(&csv)? {
-            let minute = profile.created_at / 60_000;
-            if existing.iter().any(|e| e.name == profile.name && e.created_at / 60_000 == minute) {
-                result.skipped.push(profile.name);
-                continue;
+    /// Store `profile` as read from a CSV (see [`crate::profiles_from_csv`]):
+    /// as a new profile, or in place of profile `replacing`, whose id it
+    /// takes.
+    pub fn import(
+        self: Arc<Self>,
+        profile: SavedProfile,
+        replacing: Option<String>,
+    ) -> Result<ProfileSummary, ScanError> {
+        let mut profile = profile;
+        profile.id = match replacing {
+            Some(id) => {
+                self.path(&id)?;
+                id
             }
-            let mut n = now_ms();
-            while self.dir.join(format!("{n}.json")).exists() {
-                n += 1;
+            None => {
+                let mut n = now_ms();
+                while self.dir.join(format!("{n}.json")).exists() {
+                    n += 1;
+                }
+                n.to_string()
             }
-            profile.id = n.to_string();
-            profile.notes = clean_notes(profile.notes);
-            self.write(&profile)?;
-            result.imported.push(ProfileSummary::from(&profile));
-        }
-        Ok(result)
+        };
+        profile.notes = clean_notes(profile.notes);
+        self.write(&profile)?;
+        Ok(ProfileSummary::from(&profile))
     }
 
     pub fn rename(self: Arc<Self>, id: String, name: String) -> Result<(), ScanError> {

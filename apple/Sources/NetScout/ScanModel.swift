@@ -630,39 +630,79 @@ extension ScanModel {
 
 // MARK: - CSV import
 
+/// What to do with an imported profile named like one already saved.
+enum ImportConflict {
+    case replace, copy, skip
+}
+
 extension ScanModel {
     /// Add the profiles of the CSV files `urls` and select the first one.
-    func importProfiles(from urls: [URL]) {
+    /// For each profile named like a saved one, `resolve` says what to do
+    /// (given the saved profile, the imported one and how many such
+    /// profiles are left after this one).
+    func importProfiles(
+        from urls: [URL],
+        resolve: (ProfileSummary, SavedProfile, Int) -> ImportConflict
+    ) {
         guard let profileStore else { return }
-        var imported: [ProfileSummary] = []
-        var skipped: [String] = []
+        var read: [SavedProfile] = []
         var failed: [String] = []
         for url in urls {
             do {
                 let data = try Data(contentsOf: url)
                 // As exported (UTF-8); a spreadsheet may save it in its own encoding.
                 let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-                let result = try profileStore.importCsv(csv: text)
-                imported += result.imported
-                skipped += result.skipped
+                read += try profilesFromCsv(csv: text)
             } catch ScanError.InvalidConfig(_) {
                 failed.append("«\(url.lastPathComponent)» non è un CSV esportato da NetScout.")
             } catch {
                 failed.append("«\(url.lastPathComponent)»: \(error.localizedDescription)")
             }
         }
+        let names = Set(profiles.map(\.name))
+        var conflictsLeft = read.filter { names.contains($0.name) }.count
+        var imported: [ProfileSummary] = []
+        for var profile in read {
+            var replacing: String?
+            if let saved = profiles.first(where: { $0.name == profile.name }) {
+                conflictsLeft -= 1
+                switch resolve(saved, profile, conflictsLeft) {
+                case .replace:
+                    replacing = saved.id
+                    noteDrafts[saved.id] = nil
+                case .copy:
+                    profile.name = copyName(profile.name)
+                case .skip:
+                    continue
+                }
+            }
+            do {
+                let summary = try profileStore.`import`(profile: profile, replacing: replacing)
+                imported.append(summary)
+                profiles = (try? profileStore.list()) ?? profiles
+            } catch {
+                failed.append("«\(profile.name)»: \(error)")
+            }
+        }
         refreshProfiles()
         if let first = imported.first {
             selectedProfileID = first.id
         }
-        var message: [String] = failed
-        if !skipped.isEmpty {
-            message.append("Già presenti, non importati: \(skipped.map { "«\($0)»" }.joined(separator: ", ")).")
+        if !failed.isEmpty {
+            errorMessage = failed.joined(separator: "\n")
         }
-        if !message.isEmpty {
-            if !imported.isEmpty { message.insert("Profili importati: \(imported.count).", at: 0) }
-            errorMessage = message.joined(separator: "\n")
+    }
+
+    /// `name` with "(importato)", numbered if that is taken too.
+    private func copyName(_ name: String) -> String {
+        let taken = Set(profiles.map(\.name))
+        var candidate = "\(name) (importato)"
+        var n = 2
+        while taken.contains(candidate) {
+            candidate = "\(name) (importato \(n))"
+            n += 1
         }
+        return candidate
     }
 }
 

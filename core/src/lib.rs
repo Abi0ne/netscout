@@ -18,7 +18,7 @@
 //!   `match_profile`/`host_matches` search profiles (notes by `device_key`);
 //!   `recognize_network` finds the profile of the network being scanned
 //!   (`NetworkMatch`); `profiles_csv` exports profiles as CSV and
-//!   `ProfileStore::import_csv` reads them back.
+//!   `profiles_from_csv` reads them back (stored by `ProfileStore::import`).
 //! * [`ScanError`] — the FFI error enum.
 //! * Records: `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`,
 //!   `Progress`, `Summary`, `DeviceTypeCount`.
@@ -54,10 +54,11 @@ pub mod types;
 pub mod wol;
 
 pub use error::ScanError;
+pub use csv_import::profiles_from_csv;
 pub use export::profiles_csv;
 pub use platform::requires_multicast_lock;
 pub use profiles::{
-    device_key, diff_hosts, CsvImport, host_matches, match_profile, open_profile_store, HostChange,
+    device_key, diff_hosts, host_matches, match_profile, open_profile_store, HostChange,
     ProfileMatch, ProfileStore, ProfileSummary, SavedProfile, ScanDiff,
 };
 pub use recognize::{recognize_network, NetworkMatch};

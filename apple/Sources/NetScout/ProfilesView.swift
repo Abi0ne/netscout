@@ -169,7 +169,8 @@ private func exportProfiles(_ ids: [String], name: String, model: ScanModel) {
     }
 }
 
-/// Ask for CSV files exported by NetScout and add their profiles.
+/// Ask for CSV files exported by NetScout and add their profiles, asking
+/// what to do with each one named like a saved profile.
 @MainActor
 private func importProfiles(model: ScanModel) {
     let panel = NSOpenPanel()
@@ -177,7 +178,46 @@ private func importProfiles(model: ScanModel) {
     panel.allowedContentTypes = [.commaSeparatedText, .plainText]
     panel.allowsMultipleSelection = true
     guard panel.runModal() == .OK else { return }
-    model.importProfiles(from: panel.urls)
+    var forAll: ImportConflict?
+    model.importProfiles(from: panel.urls) { saved, imported, left in
+        if let forAll { return forAll }
+        let choice = askImportConflict(saved: saved, imported: imported, left: left, model: model)
+        if choice.forAll { forAll = choice.conflict }
+        return choice.conflict
+    }
+}
+
+@MainActor
+private func askImportConflict(
+    saved: ProfileSummary, imported: SavedProfile, left: Int, model: ScanModel
+) -> (conflict: ImportConflict, forAll: Bool) {
+    func describe(_ date: Date, _ up: Int, _ off: Int) -> String {
+        "salvato \(date.formatted(date: .abbreviated, time: .shortened)), \(up) dispositivi\(off > 0 ? " e \(off) spenti" : "")"
+    }
+    let importedDate = Date(timeIntervalSince1970: Double(imported.createdAt) / 1000)
+    let alert = NSAlert()
+    alert.messageText = "Esiste già un profilo «\(saved.name)»"
+    var info = """
+        Nell'app: \(describe(saved.createdAtDate, Int(saved.hostCount), Int(saved.offlineCount))).
+        Nel file: \(describe(importedDate, imported.hosts.count, imported.offlineHosts.count)).
+        """
+    if model.hasUnsavedNotes(profile: saved.id) {
+        info += "\n\nSostituendolo, anche le note non salvate del profilo andranno perse."
+    }
+    alert.informativeText = info
+    alert.addButton(withTitle: "Sostituisci")
+    alert.addButton(withTitle: "Importa come copia")
+    alert.addButton(withTitle: "Salta")
+    if left > 0 {
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Fai lo stesso per gli altri \(left) con nome già presente"
+    }
+    let conflict: ImportConflict = switch alert.runModal() {
+    case .alertFirstButtonReturn: .replace
+    case .alertSecondButtonReturn: .copy
+    default: .skip
+    }
+    return (conflict, alert.suppressionButton?.state == .on)
 }
 
 private struct ProfileRow: View {

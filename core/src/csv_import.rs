@@ -21,9 +21,15 @@ use crate::types::{
     DeviceType, Host, Port, PortState, ScanProfile, ServiceInfo, SsdpInfo, Transport,
 };
 
-/// The profiles in `text`, a CSV exported by NetScout, without ids (the
-/// store assigns them). Fails when the file is not such a CSV.
-pub(crate) fn parse_profiles_csv(text: &str) -> Result<Vec<SavedProfile>, ScanError> {
+/// The profiles in `csv`, a file exported by NetScout, without ids (the
+/// store assigns them with [`crate::ProfileStore::import`]). Fails when the
+/// file is not such a CSV.
+#[uniffi::export]
+pub fn profiles_from_csv(csv: String) -> Result<Vec<SavedProfile>, ScanError> {
+    parse_profiles_csv(&csv)
+}
+
+fn parse_profiles_csv(text: &str) -> Result<Vec<SavedProfile>, ScanError> {
     let text = text.trim_start_matches('\u{feff}');
     let first_line = text.lines().next().unwrap_or_default();
     let separator = [';', ',', '\t']

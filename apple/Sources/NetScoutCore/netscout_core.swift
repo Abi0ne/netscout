@@ -552,11 +552,11 @@ public protocol ProfileStoreProtocol : AnyObject {
     func delete(id: String) throws 
     
     /**
-     * Add the profiles of `csv`, a file exported by NetScout, with their
-     * devices, notes and VLANs. A profile already here (same name, saved
-     * the same minute) is skipped.
+     * Store `profile` as read from a CSV (see [`crate::profiles_from_csv`]):
+     * as a new profile, or in place of profile `replacing`, whose id it
+     * takes.
      */
-    func importCsv(csv: String) throws  -> CsvImport
+    func `import`(profile: SavedProfile, replacing: String?) throws  -> ProfileSummary
     
     /**
      * Every readable profile, newest first. Unreadable files are skipped.
@@ -660,14 +660,15 @@ open func delete(id: String)throws  {try rustCallWithError(FfiConverterTypeScanE
 }
     
     /**
-     * Add the profiles of `csv`, a file exported by NetScout, with their
-     * devices, notes and VLANs. A profile already here (same name, saved
-     * the same minute) is skipped.
+     * Store `profile` as read from a CSV (see [`crate::profiles_from_csv`]):
+     * as a new profile, or in place of profile `replacing`, whose id it
+     * takes.
      */
-open func importCsv(csv: String)throws  -> CsvImport {
-    return try  FfiConverterTypeCsvImport.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
-    uniffi_netscout_core_fn_method_profilestore_import_csv(self.uniffiClonePointer(),
-        FfiConverterString.lower(csv),$0
+open func `import`(profile: SavedProfile, replacing: String?)throws  -> ProfileSummary {
+    return try  FfiConverterTypeProfileSummary.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_method_profilestore_import(self.uniffiClonePointer(),
+        FfiConverterTypeSavedProfile.lower(profile),
+        FfiConverterOptionString.lower(replacing),$0
     )
 })
 }
@@ -1083,87 +1084,6 @@ public func FfiConverterTypeScanner_lift(_ pointer: UnsafeMutableRawPointer) thr
 #endif
 public func FfiConverterTypeScanner_lower(_ value: Scanner) -> UnsafeMutableRawPointer {
     return FfiConverterTypeScanner.lower(value)
-}
-
-
-/**
- * What [`ProfileStore::import_csv`] did.
- */
-public struct CsvImport {
-    /**
-     * The profiles added, in the file's order.
-     */
-    public var imported: [ProfileSummary]
-    /**
-     * Names of the profiles left out because they were already saved.
-     */
-    public var skipped: [String]
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(
-        /**
-         * The profiles added, in the file's order.
-         */imported: [ProfileSummary], 
-        /**
-         * Names of the profiles left out because they were already saved.
-         */skipped: [String]) {
-        self.imported = imported
-        self.skipped = skipped
-    }
-}
-
-
-
-extension CsvImport: Equatable, Hashable {
-    public static func ==(lhs: CsvImport, rhs: CsvImport) -> Bool {
-        if lhs.imported != rhs.imported {
-            return false
-        }
-        if lhs.skipped != rhs.skipped {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(imported)
-        hasher.combine(skipped)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeCsvImport: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsvImport {
-        return
-            try CsvImport(
-                imported: FfiConverterSequenceTypeProfileSummary.read(from: &buf), 
-                skipped: FfiConverterSequenceString.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: CsvImport, into buf: inout [UInt8]) {
-        FfiConverterSequenceTypeProfileSummary.write(value.imported, into: &buf)
-        FfiConverterSequenceString.write(value.skipped, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsvImport_lift(_ buf: RustBuffer) throws -> CsvImport {
-    return try FfiConverterTypeCsvImport.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeCsvImport_lower(_ value: CsvImport) -> RustBuffer {
-    return FfiConverterTypeCsvImport.lower(value)
 }
 
 
@@ -4453,6 +4373,18 @@ public func profilesCsv(profiles: [SavedProfile]) -> String {
 })
 }
 /**
+ * The profiles in `csv`, a file exported by NetScout, without ids (the
+ * store assigns them with [`crate::ProfileStore::import`]). Fails when the
+ * file is not such a CSV.
+ */
+public func profilesFromCsv(csv: String)throws  -> [SavedProfile] {
+    return try  FfiConverterSequenceTypeSavedProfile.lift(try rustCallWithError(FfiConverterTypeScanError.lift) {
+    uniffi_netscout_core_fn_func_profiles_from_csv(
+        FfiConverterString.lower(csv),$0
+    )
+})
+}
+/**
  * The profile the network of `current` belongs to, if one is recognized
  * reliably. `gateway_ip` is the default gateway of the scanned network,
  * when known.
@@ -4503,13 +4435,16 @@ private var initializationResult: InitializationResult = {
     if (uniffi_netscout_core_checksum_func_profiles_csv() != 14775) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_netscout_core_checksum_func_profiles_from_csv() != 24284) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_netscout_core_checksum_func_recognize_network() != 11931) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_delete() != 27973) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_netscout_core_checksum_method_profilestore_import_csv() != 60924) {
+    if (uniffi_netscout_core_checksum_method_profilestore_import() != 1783) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_method_profilestore_list() != 50948) {
