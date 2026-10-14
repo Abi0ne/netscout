@@ -19,6 +19,8 @@
 //!   `recognize_network` finds the profile of the network being scanned
 //!   (`NetworkMatch`); `profiles_csv` exports profiles as CSV and
 //!   `profiles_from_csv` reads them back (stored by `ProfileStore::import`).
+//! * `parse_link_neighbor_pcap` reads the LLDP/CDP announcement of the switch
+//!   at the other end of the cable (`LinkNeighbor`) from a capture file.
 //! * [`ScanError`] — the FFI error enum.
 //! * Records: `Host`, `Port`, `ServiceInfo`, `SsdpInfo`, `NetworkInfo`, `ScanConfig`,
 //!   `Progress`, `Summary`, `DeviceTypeCount`.
@@ -43,6 +45,7 @@ pub mod icmp;
 pub mod link_discovery;
 pub mod liveness;
 pub mod names;
+pub mod neighbor;
 pub mod oui;
 pub mod platform;
 pub mod profiles;
@@ -56,6 +59,7 @@ pub mod wol;
 pub use error::ScanError;
 pub use csv_import::profiles_from_csv;
 pub use export::profiles_csv;
+pub use neighbor::{parse_link_neighbor_pcap, LinkNeighbor, NeighborVlan};
 pub use platform::requires_multicast_lock;
 pub use profiles::{
     device_key, diff_hosts, host_matches, match_profile, open_profile_store, HostChange,

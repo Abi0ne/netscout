@@ -541,6 +541,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -1535,6 +1553,286 @@ public func FfiConverterTypeHostChange_lift(_ buf: RustBuffer) throws -> HostCha
 #endif
 public func FfiConverterTypeHostChange_lower(_ value: HostChange) -> RustBuffer {
     return FfiConverterTypeHostChange.lower(value)
+}
+
+
+/**
+ * What the device at the other end of the cable announced.
+ */
+public struct LinkNeighbor {
+    /**
+     * "LLDP" or "CDP".
+     */
+    public var `protocol`: String
+    /**
+     * Its name ("RACK1P-SW48").
+     */
+    public var systemName: String?
+    /**
+     * What it says it is: LLDP's system description, CDP's platform and
+     * software ("HPE Networking Instant On Switch 48p … 1830 JL814A, …").
+     */
+    public var description: String?
+    /**
+     * Model, when announced separately (LLDP-MED inventory, CDP platform).
+     */
+    public var model: String?
+    /**
+     * The port of the neighbour the Mac is plugged into ("19", "Gi1/0/14").
+     */
+    public var port: String?
+    /**
+     * The port's description, often the name an administrator gave it.
+     */
+    public var portDescription: String?
+    /**
+     * The neighbour's identifier, usually its MAC ("14:ab:ec:5d:54:80").
+     */
+    public var chassisId: String?
+    /**
+     * Where to manage it.
+     */
+    public var managementIp: String?
+    /**
+     * What it is, in plain words: "Switch", "Router", "Telefono",
+     * "Access point", …, the enabled ones only.
+     */
+    public var capabilities: [String]
+    /**
+     * The port's untagged VLAN.
+     */
+    public var nativeVlan: UInt16?
+    /**
+     * The VLANs announced on the port, by tag.
+     */
+    public var vlans: [NeighborVlan]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * "LLDP" or "CDP".
+         */`protocol`: String, 
+        /**
+         * Its name ("RACK1P-SW48").
+         */systemName: String?, 
+        /**
+         * What it says it is: LLDP's system description, CDP's platform and
+         * software ("HPE Networking Instant On Switch 48p … 1830 JL814A, …").
+         */description: String?, 
+        /**
+         * Model, when announced separately (LLDP-MED inventory, CDP platform).
+         */model: String?, 
+        /**
+         * The port of the neighbour the Mac is plugged into ("19", "Gi1/0/14").
+         */port: String?, 
+        /**
+         * The port's description, often the name an administrator gave it.
+         */portDescription: String?, 
+        /**
+         * The neighbour's identifier, usually its MAC ("14:ab:ec:5d:54:80").
+         */chassisId: String?, 
+        /**
+         * Where to manage it.
+         */managementIp: String?, 
+        /**
+         * What it is, in plain words: "Switch", "Router", "Telefono",
+         * "Access point", …, the enabled ones only.
+         */capabilities: [String], 
+        /**
+         * The port's untagged VLAN.
+         */nativeVlan: UInt16?, 
+        /**
+         * The VLANs announced on the port, by tag.
+         */vlans: [NeighborVlan]) {
+        self.`protocol` = `protocol`
+        self.systemName = systemName
+        self.description = description
+        self.model = model
+        self.port = port
+        self.portDescription = portDescription
+        self.chassisId = chassisId
+        self.managementIp = managementIp
+        self.capabilities = capabilities
+        self.nativeVlan = nativeVlan
+        self.vlans = vlans
+    }
+}
+
+
+
+extension LinkNeighbor: Equatable, Hashable {
+    public static func ==(lhs: LinkNeighbor, rhs: LinkNeighbor) -> Bool {
+        if lhs.`protocol` != rhs.`protocol` {
+            return false
+        }
+        if lhs.systemName != rhs.systemName {
+            return false
+        }
+        if lhs.description != rhs.description {
+            return false
+        }
+        if lhs.model != rhs.model {
+            return false
+        }
+        if lhs.port != rhs.port {
+            return false
+        }
+        if lhs.portDescription != rhs.portDescription {
+            return false
+        }
+        if lhs.chassisId != rhs.chassisId {
+            return false
+        }
+        if lhs.managementIp != rhs.managementIp {
+            return false
+        }
+        if lhs.capabilities != rhs.capabilities {
+            return false
+        }
+        if lhs.nativeVlan != rhs.nativeVlan {
+            return false
+        }
+        if lhs.vlans != rhs.vlans {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(`protocol`)
+        hasher.combine(systemName)
+        hasher.combine(description)
+        hasher.combine(model)
+        hasher.combine(port)
+        hasher.combine(portDescription)
+        hasher.combine(chassisId)
+        hasher.combine(managementIp)
+        hasher.combine(capabilities)
+        hasher.combine(nativeVlan)
+        hasher.combine(vlans)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeLinkNeighbor: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> LinkNeighbor {
+        return
+            try LinkNeighbor(
+                protocol: FfiConverterString.read(from: &buf), 
+                systemName: FfiConverterOptionString.read(from: &buf), 
+                description: FfiConverterOptionString.read(from: &buf), 
+                model: FfiConverterOptionString.read(from: &buf), 
+                port: FfiConverterOptionString.read(from: &buf), 
+                portDescription: FfiConverterOptionString.read(from: &buf), 
+                chassisId: FfiConverterOptionString.read(from: &buf), 
+                managementIp: FfiConverterOptionString.read(from: &buf), 
+                capabilities: FfiConverterSequenceString.read(from: &buf), 
+                nativeVlan: FfiConverterOptionUInt16.read(from: &buf), 
+                vlans: FfiConverterSequenceTypeNeighborVlan.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: LinkNeighbor, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.`protocol`, into: &buf)
+        FfiConverterOptionString.write(value.systemName, into: &buf)
+        FfiConverterOptionString.write(value.description, into: &buf)
+        FfiConverterOptionString.write(value.model, into: &buf)
+        FfiConverterOptionString.write(value.port, into: &buf)
+        FfiConverterOptionString.write(value.portDescription, into: &buf)
+        FfiConverterOptionString.write(value.chassisId, into: &buf)
+        FfiConverterOptionString.write(value.managementIp, into: &buf)
+        FfiConverterSequenceString.write(value.capabilities, into: &buf)
+        FfiConverterOptionUInt16.write(value.nativeVlan, into: &buf)
+        FfiConverterSequenceTypeNeighborVlan.write(value.vlans, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLinkNeighbor_lift(_ buf: RustBuffer) throws -> LinkNeighbor {
+    return try FfiConverterTypeLinkNeighbor.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeLinkNeighbor_lower(_ value: LinkNeighbor) -> RustBuffer {
+    return FfiConverterTypeLinkNeighbor.lower(value)
+}
+
+
+/**
+ * A VLAN a neighbour announced on the port.
+ */
+public struct NeighborVlan {
+    public var tag: UInt16
+    public var name: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(tag: UInt16, name: String?) {
+        self.tag = tag
+        self.name = name
+    }
+}
+
+
+
+extension NeighborVlan: Equatable, Hashable {
+    public static func ==(lhs: NeighborVlan, rhs: NeighborVlan) -> Bool {
+        if lhs.tag != rhs.tag {
+            return false
+        }
+        if lhs.name != rhs.name {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(tag)
+        hasher.combine(name)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNeighborVlan: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NeighborVlan {
+        return
+            try NeighborVlan(
+                tag: FfiConverterUInt16.read(from: &buf), 
+                name: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NeighborVlan, into buf: inout [UInt8]) {
+        FfiConverterUInt16.write(value.tag, into: &buf)
+        FfiConverterOptionString.write(value.name, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNeighborVlan_lift(_ buf: RustBuffer) throws -> NeighborVlan {
+    return try FfiConverterTypeNeighborVlan.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNeighborVlan_lower(_ value: NeighborVlan) -> RustBuffer {
+    return FfiConverterTypeNeighborVlan.lower(value)
 }
 
 
@@ -3868,6 +4166,30 @@ extension FfiConverterCallbackInterfaceScanObserver : FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = UInt16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
     typealias SwiftType = Int64?
 
@@ -3932,6 +4254,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeLinkNeighbor: FfiConverterRustBuffer {
+    typealias SwiftType = LinkNeighbor?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeLinkNeighbor.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeLinkNeighbor.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -4105,6 +4451,31 @@ fileprivate struct FfiConverterSequenceTypeHostChange: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeHostChange.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeNeighborVlan: FfiConverterRustBuffer {
+    typealias SwiftType = [NeighborVlan]
+
+    public static func write(_ value: [NeighborVlan], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeNeighborVlan.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [NeighborVlan] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [NeighborVlan]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeNeighborVlan.read(from: &buf))
         }
         return seq
     }
@@ -4362,6 +4733,17 @@ public func openProfileStore(dir: String)throws  -> ProfileStore {
 })
 }
 /**
+ * The first LLDP or CDP announcement in `pcap` (a capture file, Ethernet
+ * link type), if any.
+ */
+public func parseLinkNeighborPcap(pcap: Data) -> LinkNeighbor? {
+    return try!  FfiConverterOptionTypeLinkNeighbor.lift(try! rustCall() {
+    uniffi_netscout_core_fn_func_parse_link_neighbor_pcap(
+        FfiConverterData.lower(pcap),$0
+    )
+})
+}
+/**
  * `profiles` as CSV text, devices up first, then those off, each by IP. A
  * profile without devices still gets a row.
  */
@@ -4430,6 +4812,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_func_open_profile_store() != 45667) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_netscout_core_checksum_func_parse_link_neighbor_pcap() != 64454) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_netscout_core_checksum_func_profiles_csv() != 14775) {

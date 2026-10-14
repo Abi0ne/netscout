@@ -431,6 +431,11 @@ void*_Nonnull uniffi_netscout_core_fn_func_new_scanner(RustCallStatus *_Nonnull 
 void*_Nonnull uniffi_netscout_core_fn_func_open_profile_store(RustBuffer dir, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_PARSE_LINK_NEIGHBOR_PCAP
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_PARSE_LINK_NEIGHBOR_PCAP
+RustBuffer uniffi_netscout_core_fn_func_parse_link_neighbor_pcap(RustBuffer pcap, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_PROFILES_CSV
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_FN_FUNC_PROFILES_CSV
 RustBuffer uniffi_netscout_core_fn_func_profiles_csv(RustBuffer profiles, RustCallStatus *_Nonnull out_status
@@ -759,6 +764,12 @@ uint16_t uniffi_netscout_core_checksum_func_new_scanner(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_OPEN_PROFILE_STORE
 #define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_OPEN_PROFILE_STORE
 uint16_t uniffi_netscout_core_checksum_func_open_profile_store(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_PARSE_LINK_NEIGHBOR_PCAP
+#define UNIFFI_FFIDEF_UNIFFI_NETSCOUT_CORE_CHECKSUM_FUNC_PARSE_LINK_NEIGHBOR_PCAP
+uint16_t uniffi_netscout_core_checksum_func_parse_link_neighbor_pcap(void
     
 );
 #endif

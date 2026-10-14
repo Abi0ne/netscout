@@ -19,12 +19,17 @@ final class ScanModel {
     /// can be on the same network (Wi-Fi and Ethernet in the office), so the
     /// target alone does not say which one was chosen.
     var interface: String? {
-        didSet { vlan.follow(interface: interface) }
+        didSet {
+            vlan.follow(interface: interface)
+            linkedSwitch.follow(port: switchPort)
+        }
     }
     var profile: ScanProfile = .standard
     var errorMessage: String?
     /// A tagged VLAN on the same cable, scanned along with `target`.
     let vlan = TaggedVLAN()
+    /// The switch at the other end of the scan interface's cable.
+    @ObservationIgnored private(set) lazy var linkedSwitch = LinkedSwitch(vlan: vlan)
 
     private(set) var hosts: [String: Host] = [:]
     /// Devices known from a saved profile but not found by this scan, keyed
@@ -33,6 +38,9 @@ final class ScanModel {
     private(set) var progress: NetScoutCore.Progress?
     private(set) var summary: Summary?
     private(set) var isScanning = false
+    /// Activating the VLAN before the scan starts (it can be stopped).
+    private(set) var isStarting = false
+    @ObservationIgnored private var starting: Task<Void, Never>?
     /// IPs with a deep single-host scan in flight.
     private(set) var deepScanning: Set<String> = []
     /// Target and depth of the last scan started (what a saved profile records).
@@ -221,14 +229,25 @@ final class ScanModel {
         // The VLAN's interface first (it may ask for the password).
         errorMessage = nil
         let others = networks.filter { $0.interface != vlan.active?.interface }
-        Task {
+        isStarting = true
+        starting = Task {
+            defer { isStarting = false }
             do {
                 let active = try await vlan.prepare(networks: others)
+                guard !Task.isCancelled else { return }
                 launchScan(trimmed, vlan: ScannedVLAN(active))
             } catch {
+                guard !Task.isCancelled else { return }
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Put the VLAN settings back as at launch: the option off, no tag,
+    /// DHCP, and the VLAN interface removed from the Mac.
+    func resetVLAN() {
+        guard !isScanning, !isStarting else { return }
+        vlan.reset()
     }
 
     private func launchScan(_ trimmed: String, vlan: ScannedVLAN? = nil) {
@@ -303,6 +322,10 @@ final class ScanModel {
     }
 
     func cancel() {
+        // Still activating the VLAN: the scan will not start.
+        starting?.cancel()
+        starting = nil
+        isStarting = false
         try? scanner?.cancel()
         generation += 1
         pendingHosts = [:]

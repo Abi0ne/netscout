@@ -238,9 +238,14 @@ struct SidebarView: View {
                 VLANOptions(vlan: model.vlan)
             }
             profilePicker
-            scanButton
-                .controlSize(.large)
-                .padding(.top, 2)
+            HStack(spacing: 6) {
+                scanButton
+                if showsReset {
+                    resetButton
+                }
+            }
+            .controlSize(.large)
+            .padding(.top, 2)
             if let p = model.progress {
                 ProgressInfo(progress: p, running: model.isScanning)
             }
@@ -276,6 +281,9 @@ struct SidebarView: View {
                 profilePicker
                 scanButton
                     .fixedSize()
+                if showsReset {
+                    resetButton
+                }
             }
             if let p = model.progress {
                 ProgressInfo(progress: p, running: model.isScanning, compact: true)
@@ -345,21 +353,45 @@ struct SidebarView: View {
         .labelsHidden()
     }
 
+    private var running: Bool { model.isScanning || model.isStarting }
+
     private var scanButton: some View {
         Button {
-            model.isScanning ? model.cancel() : model.startScan()
+            running ? model.cancel() : model.startScan()
         } label: {
             Label(
-                model.isScanning ? "Ferma"
-                    : model.vlan.isPreparing ? (compact ? "VLAN…" : "Attivazione VLAN…")
+                model.isStarting ? (compact ? "Ferma" : "Ferma attivazione VLAN")
+                    : model.isScanning ? "Ferma"
+                    // Stopped while the helper was still making the
+                    // interface: it answers within its own time limit.
+                    : model.vlan.isPreparing ? (compact ? "Attendi…" : "Chiusura dell'attivazione…")
                     : (compact ? "Avvia" : "Avvia scansione"),
-                systemImage: model.isScanning ? "stop.fill" : "play.fill"
+                systemImage: running ? "stop.fill" : "play.fill"
             )
             .frame(maxWidth: compact ? nil : .infinity)
         }
         .buttonStyle(.borderedProminent)
-        .tint(model.isScanning ? .red : .accentColor)
-        .disabled(model.vlan.isPreparing)
+        .tint(running ? .red : .accentColor)
+        .disabled(!running && model.vlan.isPreparing)
+        .help(model.isStarting ? "Interrompi l'attivazione della VLAN: la scansione non parte" : "")
+    }
+
+    /// Offered when not scanning and the VLAN settings are not as at launch.
+    private var showsReset: Bool {
+        !running && !model.vlan.isPreparing && (model.vlan.isAvailable || model.vlan.active != nil)
+    }
+
+    private var resetButton: some View {
+        Button {
+            model.resetVLAN()
+        } label: {
+            Label("Reset VLAN", systemImage: "arrow.counterclockwise")
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!model.vlan.canReset)
+        .help(model.vlan.active.map { "Reset VLAN: toglie «Abilita VLAN scan», azzera le impostazioni VLAN e rimuove l'interfaccia \($0.interface) dal Mac" }
+            ?? "Reset VLAN: toglie «Abilita VLAN scan» e azzera le impostazioni VLAN")
     }
 
     private func typeCounts(_ hosts: [Host]) -> [(type: DeviceType, count: Int)] {

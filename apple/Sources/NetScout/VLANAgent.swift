@@ -22,6 +22,10 @@ import Foundation
 ///   send on PORT, summed up line by line ("frames TAG COUNT", "mac TAG
 ///   MAC", "net TAG A.B.C COUNT", then "end") in the file it answers with.
 /// - `quiet`: stops listening.
+/// - `neighbor PORT SECONDS`: waits up to SECONDS for the LLDP or CDP
+///   announcement of the device at the other end of PORT's cable, and
+///   answers once done with the path of a capture file (pcap, empty of
+///   frames if none came).
 @MainActor
 final class VLANAgent {
     private let commands: URL
@@ -238,6 +242,23 @@ final class VLANAgent {
           reply $n 0 "$out/$n.vlans"
         }
 
+        # neighbor N PORT SECONDS: the first LLDP or CDP frame on PORT, in
+        # N.pcap; answered when it came or the time is up.
+        neighbor() {
+          n=$1; parent=$2; secs=$3
+          if ! port "$parent" || ! number "$secs" || [ "$secs" -gt 300 ]; then
+            reply $n 2 "richiesta non valida"; return
+          fi
+          own "$out/$n.pcap"
+          (
+            /usr/sbin/tcpdump -c 1 -s 1600 -U -i $parent -w - "ether proto 0x88cc or ether dst 01:00:0c:cc:cc:cc" >> "$out/$n.pcap" 2>/dev/null &
+            p=$!
+            ( sleep $secs; kill -9 $p 2>/dev/null ) &
+            wait $p
+            reply $n 0 "$out/$n.pcap"
+          ) &
+        }
+
         n=1
         while kill -0 $app 2>/dev/null && [ -d "$commands" ]; do
           f="$commands/$n.cmd"
@@ -249,6 +270,7 @@ final class VLANAgent {
               down) remove $n "$a" ;;
               listen) listen $n "$a" "$b" ;;
               quiet) quiet; reply $n 0 "" ;;
+              neighbor) neighbor $n "$a" "$b" ;;
               *) reply $n 2 "comando sconosciuto" ;;
             esac
             n=$((n+1))
@@ -265,7 +287,7 @@ final class VLANAgent {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let script = "do shell script \"\(escaped)\" with administrator privileges without altering line endings "
-            + "with prompt \"NetScout deve ascoltare la porta Ethernet e creare interfacce VLAN per scansionare le reti taggate.\""
+            + "with prompt \"NetScout deve ascoltare la porta Ethernet per riconoscere lo switch e le VLAN, e creare interfacce VLAN per scansionare le reti taggate.\""
         return try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             process.executableURL = URL(filePath: "/usr/bin/osascript")

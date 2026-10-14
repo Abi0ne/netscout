@@ -106,6 +106,14 @@ struct HelpTopic: Identifiable {
                 "più destinazioni separate da virgola: `192.168.1.0/24, 10.0.0.5`",
             ]),
             .text("Premendo Invio nel campo la scansione parte subito."),
+            .heading("Lo switch a cui è collegato il Mac"),
+            .text("Il pulsante con lo switch e il punto interrogativo, in alto a destra nella scheda **Scansione**, dice a quale switch e a quale porta è collegato il Mac. Gli switch gestiti si annunciano su ogni porta ogni 30 secondi circa (LLDP; i Cisco ogni 60 con CDP): NetScout ascolta la porta Ethernet (quella scelta per la scansione, o il cavo se la scansione passa dal Wi‑Fi), al massimo per un minuto, e mostra nome e modello dello switch, la **porta**, l'indirizzo di gestione (con il pulsante per aprirne la pagina). **Mostra nella tabella** seleziona lo switch tra i dispositivi trovati."),
+            .bullets([
+                "Serve la **password di amministratore**, la stessa della VLAN taggata: si chiede una volta sola per sessione.",
+                "Funziona solo via cavo: in Wi‑Fi l'access point non fa passare gli annunci.",
+                "Gli annunci non attraversano gli switch: si vede solo l'apparato collegato direttamente al Mac (se in mezzo c'è un telefono VoIP o un piccolo switch, compare quello).",
+                "Gli switch non gestiti non si annunciano.",
+            ]),
             .heading("Una VLAN taggata sullo stesso cavo"),
             .text("Se la porta dello switch a cui è collegato il Mac porta, oltre alla rete in access, anche una VLAN taggata, NetScout può scansionare entrambe insieme. Quando nel menu delle interfacce scegli una **porta Ethernet che può ricevere VLAN** (quella di un dock o di un adattatore, non il Wi‑Fi), sotto la destinazione compare **Abilita VLAN scan** (nel pannello compatto è il pulsante con l'etichetta accanto alla destinazione). Spuntala: macOS chiede la **password di amministratore** e NetScout ascolta la porta per 30 secondi, riempiendo un menu con le VLAN taggate che arrivano sul cavo, ciascuna con la rete e il numero di dispositivi visti (es. `VLAN 69 · 172.20.20.x · 4 dispositivi`); ↻ ascolta di nuovo, per le VLAN con poco traffico. Poi indica:"),
             .bullets([
@@ -116,6 +124,8 @@ struct HelpTopic: Identifiable {
             .bullets([
                 "La password si chiede una volta sola per sessione: ascolto, creazione e rimozione delle interfacce passano da un piccolo processo con privilegi che resta attivo finché NetScout è aperto.",
                 "L'interfaccia resta attiva dopo la scansione, così la scansione approfondita e le connessioni ai dispositivi della VLAN funzionano.",
+                "Il pulsante **↺** accanto ad **Avvia scansione** rimette le impostazioni VLAN come all'apertura dell'app: toglie **Abilita VLAN scan**, azzera tag e indirizzo e rimuove l'interfaccia VLAN dal Mac (senza chiedere di nuovo la password).",
+                "Mentre la VLAN si attiva (fino a 40 secondi con il DHCP) il pulsante diventa **Ferma attivazione VLAN**: la scansione non parte.",
                 "Viene rimossa quando premi **Disattiva**, togli la spunta, cambi le impostazioni o l'interfaccia, o chiudi NetScout (anche se si chiude in modo anomalo). Le impostazioni di rete del Mac non vengono toccate, e un riavvio la cancella comunque.",
                 "Con il DHCP NetScout tiene solo l'indirizzo: router e DNS della VLAN non vengono usati, così il traffico del Mac non cambia strada.",
                 "Se la rete della VLAN coincide con una che il Mac raggiunge già, NetScout non la attiva.",

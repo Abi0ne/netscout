@@ -73,6 +73,7 @@ struct RootView: View {
                             Label("Scheda dispositivo", systemImage: "sidebar.right")
                         }
                         .help(model.showDeviceCard ? "Nascondi la scheda del dispositivo" : "Mostra la scheda del dispositivo")
+                        LinkedSwitchButton()
                     }
                 }
             }
@@ -131,8 +132,8 @@ struct RootView: View {
         }
     }
 
-    /// The card button and the gaps around it.
-    private static let cardButtonWidth: CGFloat = 52
+    /// The card and switch buttons and the gaps around them.
+    private static let cardButtonWidth: CGFloat = 92
 }
 
 extension NetworkMatch {

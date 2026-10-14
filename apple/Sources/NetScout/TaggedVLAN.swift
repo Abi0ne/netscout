@@ -272,6 +272,26 @@ final class TaggedVLAN {
         if let agent { Task { _ = try? await agent.send(["down", active.interface]) } }
     }
 
+    /// Back to the settings of a new session: the option off, no tag,
+    /// DHCP, and the VLAN interface removed. The helper keeps running, so
+    /// the password is not asked again.
+    func reset() {
+        enabled = false
+        stopDiscovery()
+        deactivate()
+        tag = ""
+        typingTag = false
+        addressing = .dhcp
+        address = ""
+        discovered = []
+        discoveryProblem = nil
+    }
+
+    /// Something to reset: the option on, a tag, or a VLAN interface up.
+    var canReset: Bool {
+        enabled || active != nil || !tag.isEmpty || addressing != .dhcp || !address.isEmpty
+    }
+
     /// NetScout is quitting: the agent removes what it made and exits.
     func shutdown() {
         agent?.stop()
@@ -280,7 +300,7 @@ final class TaggedVLAN {
     }
 
     /// The running agent, else a new one (one password prompt at a time).
-    private func agentReady() async throws -> VLANAgent {
+    func agentReady() async throws -> VLANAgent {
         if let agent, agent.isAlive { return agent }
         agent = nil
         active = nil
