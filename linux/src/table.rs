@@ -1,6 +1,8 @@
 //! The host table: a `GtkColumnView` over a `gio::ListStore` of [`Row`]s,
-//! filtered by device type and search text, with the device notes in their
-//! own column ([`Notes`]).
+//! filtered by device type, network and search text, with the device notes
+//! in their own column ([`Notes`]) and, after a scan with a tagged VLAN, the
+//! network each device was found on ("VLAN"). A right click copies a
+//! device's IP or MAC.
 //!
 //! Sorting works like the macOS app's: a click on a column title sorts by
 //! that column alone (again: reversed); Shift+click adds the column after
@@ -21,11 +23,14 @@ use gtk::{gdk, gio, glib};
 use netscout_core::{device_key, host_matches, DeviceType, Host};
 
 use crate::labels;
+use crate::segment::{ScannedVlan, Segment};
 
 /// One table row: a device found up, or one known from a profile that is off.
 pub struct Row {
     pub host: Host,
     pub offline: bool,
+    /// Where it was found (a scan or profile with a tagged VLAN only).
+    pub segment: Option<Segment>,
 }
 
 impl Row {
@@ -57,11 +62,16 @@ pub fn row_of(obj: &glib::Object) -> std::cell::Ref<'_, Row> {
         .borrow::<Row>()
 }
 
-/// What the table shows: a device type (sidebar) and a search query, which
-/// also looks at the devices' notes (by `device_key`) when there are some.
+/// What the table shows: a device type (sidebar), a network (a scan with a
+/// tagged VLAN) and a search query, which also looks at the devices' notes
+/// (by `device_key`) when there are some, and finds a VLAN's devices by its
+/// name ("vlan 69").
 #[derive(Default)]
 pub struct FilterState {
     pub device_type: Option<DeviceType>,
+    pub segment: Option<Segment>,
+    /// The VLANs the rows' networks are told apart by.
+    pub vlans: Vec<ScannedVlan>,
     pub query: String,
     pub notes: HashMap<String, String>,
 }
@@ -70,6 +80,13 @@ impl FilterState {
     fn matches(&self, host: &Host) -> bool {
         if self.device_type.is_some_and(|t| t != host.device_type) {
             return false;
+        }
+        let segment = Segment::of(host, &self.vlans);
+        if self.segment.is_some() && segment != self.segment {
+            return false;
+        }
+        if segment.is_some_and(|s| s.matches(&self.query)) {
+            return true;
         }
         let note = self.notes.get(&device_key(host)).cloned();
         host_matches(host, note, self.query.clone())
@@ -86,6 +103,9 @@ pub struct Notes {
 }
 
 pub type NoteSetter = Box<dyn Fn(&Host, String)>;
+
+/// The right click's "Dimentica dispositivo spento", when offered.
+type ForgetFn = Rc<RefCell<Option<Box<dyn Fn(&str)>>>>;
 
 /// How a column orders two rows.
 type RowOrder = Box<dyn Fn(&Row, &Row) -> Ordering>;
@@ -105,11 +125,17 @@ struct Column {
 type SortKeys = Rc<RefCell<Vec<(usize, bool)>>>;
 
 pub struct Table {
+    /// The table in its scroller, to put in a window.
+    pub widget: gtk::Widget,
     pub view: gtk::ColumnView,
     pub store: gio::ListStore,
     pub selection: gtk::SingleSelection,
     pub filter: gtk::CustomFilter,
     pub filtered: gtk::FilterListModel,
+    /// "VLAN": shown for a scan or profile with a tagged VLAN.
+    network_column: gtk::ColumnViewColumn,
+    /// The right click's "Dimentica dispositivo spento", when offered.
+    forget: ForgetFn,
 }
 
 impl Table {
@@ -125,6 +151,7 @@ impl Table {
                 glib::BoxedAnyObject::new(Row {
                     host: row.host.clone(),
                     offline: row.offline,
+                    segment: row.segment,
                 })
             })
             .collect();
@@ -139,6 +166,16 @@ impl Table {
                 self.selection.set_selected(pos);
             }
         }
+    }
+
+    pub fn set_network_column(&self, visible: bool) {
+        self.network_column.set_visible(visible);
+    }
+
+    /// Offer "Dimentica dispositivo spento" on the rows of devices that are
+    /// off (given the row's id).
+    pub fn set_forget(&self, forget: impl Fn(&str) + 'static) {
+        *self.forget.borrow_mut() = Some(Box::new(forget));
     }
 }
 
@@ -193,6 +230,19 @@ pub fn build(filter_state: Rc<RefCell<FilterState>>, notes: Option<Notes>) -> Ta
         Box::new(|r: &Row| r.host.ip.clone()),
     );
     add(
+        "VLAN",
+        85,
+        false,
+        0,
+        Box::new(network_cell),
+        Box::new(|a: &Row, b: &Row| {
+            a.segment
+                .unwrap_or(Segment::Native)
+                .cmp(&b.segment.unwrap_or(Segment::Native))
+        }),
+        Box::new(|r: &Row| r.segment.map(|s| s.short_label()).unwrap_or_default()),
+    );
+    add(
         "Nome",
         120,
         true,
@@ -229,7 +279,7 @@ pub fn build(filter_state: Rc<RefCell<FilterState>>, notes: Option<Notes>) -> Ta
     );
     add(
         "Latenza",
-        75,
+        95,
         false,
         0,
         Box::new(latency_cell),
@@ -237,6 +287,8 @@ pub fn build(filter_state: Rc<RefCell<FilterState>>, notes: Option<Notes>) -> Ta
         Box::new(|r: &Row| {
             if r.offline {
                 "Spento".into()
+            } else if r.host.off_subnet {
+                "Fuori rete".into()
             } else {
                 r.host.rtt_ms.map_or("—".into(), |v| format!("{v:.1} ms"))
             }
@@ -305,15 +357,133 @@ pub fn build(filter_state: Rc<RefCell<FilterState>>, notes: Option<Notes>) -> Ta
             .set_sorter(Some(&gtk::CustomSorter::new(|_, _| gtk::Ordering::Equal)));
     }
     install_sorting(&view, columns.clone(), keys, by_keys);
+    let network_column = columns.borrow()[2].view.clone();
+    network_column.set_visible(false);
     install_fit(&view, columns, selection.clone());
 
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_child(Some(&view));
+    scroller.set_vexpand(true);
+    // A stack around it, to carry the right click's popover.
+    let widget = gtk::Stack::new();
+    widget.add_child(&scroller);
+    let forget: ForgetFn = Rc::new(RefCell::new(None));
+    install_context_menu(&view, &widget, &selection, forget.clone());
+
     Table {
+        widget: widget.upcast(),
         view,
         store,
         selection,
         filter,
         filtered,
+        network_column,
+        forget,
     }
+}
+
+/// A right click on a row selects it and offers to copy its IP or MAC (and,
+/// for a device that is off, to forget it, when the table allows that).
+fn install_context_menu(
+    view: &gtk::ColumnView,
+    holder: &gtk::Stack,
+    selection: &gtk::SingleSelection,
+    forget: ForgetFn,
+) {
+    // The row the menu is about.
+    let target: Rc<RefCell<Option<(Host, bool)>>> = Rc::new(RefCell::new(None));
+    let group = gio::SimpleActionGroup::new();
+    let copy = |name: &str, field: fn(&Host) -> Option<String>| {
+        let action = gio::SimpleAction::new(name, None);
+        let (target, v) = (target.clone(), view.clone());
+        action.connect_activate(move |_, _| {
+            if let Some(text) = target.borrow().as_ref().and_then(|(h, _)| field(h)) {
+                v.clipboard().set_text(&text);
+            }
+        });
+        group.add_action(&action);
+        action
+    };
+    copy("copy-ip", |h| Some(h.ip.clone()));
+    let copy_mac = copy("copy-mac", |h| h.mac.clone());
+    let forget_action = gio::SimpleAction::new("forget", None);
+    let (t, f) = (target.clone(), forget.clone());
+    forget_action.connect_activate(move |_, _| {
+        let id = t
+            .borrow()
+            .as_ref()
+            .map(|(h, _)| offline_id(h));
+        if let (Some(id), Some(forget)) = (id, f.borrow().as_ref()) {
+            forget(&id);
+        }
+    });
+    group.add_action(&forget_action);
+    holder.insert_action_group("table", Some(&group));
+
+    let popover = gtk::PopoverMenu::from_model(None::<&gio::MenuModel>);
+    popover.set_parent(holder);
+    popover.set_has_arrow(false);
+    let click = gtk::GestureClick::new();
+    click.set_button(gdk::BUTTON_SECONDARY);
+    let (v, holder, selection) = (view.clone(), holder.clone(), selection.clone());
+    click.connect_pressed(move |_, _, x, y| {
+        let Some(id) = row_id_at(&v, x, y) else {
+            return;
+        };
+        let Some(pos) = (0..selection.n_items()).find(|&i| {
+            selection
+                .item(i)
+                .is_some_and(|obj| row_of(&obj).id() == id)
+        }) else {
+            return;
+        };
+        selection.set_selected(pos);
+        let Some(obj) = selection.item(pos) else {
+            return;
+        };
+        let (host, offline) = {
+            let row = row_of(&obj);
+            (row.host.clone(), row.offline)
+        };
+        copy_mac.set_enabled(host.mac.is_some());
+        let menu = gio::Menu::new();
+        let copies = gio::Menu::new();
+        copies.append(Some("Copia indirizzo IP"), Some("table.copy-ip"));
+        copies.append(Some("Copia indirizzo MAC"), Some("table.copy-mac"));
+        menu.append_section(None, &copies);
+        if offline && forget.borrow().is_some() {
+            let more = gio::Menu::new();
+            more.append(Some("Dimentica dispositivo spento"), Some("table.forget"));
+            menu.append_section(None, &more);
+        }
+        *target.borrow_mut() = Some((host, offline));
+        popover.set_menu_model(Some(&menu));
+        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        let point = v.compute_point(&holder, &point).unwrap_or(point);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(
+            point.x() as i32,
+            point.y() as i32,
+            1,
+            1,
+        )));
+        popover.popup();
+    });
+    view.add_controller(click);
+}
+
+/// The id of the row under (`x`, `y`): its cells carry it in their names.
+fn row_id_at(view: &gtk::ColumnView, x: f64, y: f64) -> Option<String> {
+    let mut widget = view.pick(x, y, gtk::PickFlags::DEFAULT);
+    while let Some(w) = widget {
+        if let Some(id) = w.widget_name().strip_prefix("row:") {
+            return Some(id.to_string());
+        }
+        if w == *view.upcast_ref::<gtk::Widget>() {
+            return None;
+        }
+        widget = w.parent();
+    }
+    None
 }
 
 /// Header clicks drive `keys` (see the module docs).
@@ -465,13 +635,15 @@ fn install_fit(
             child = w.next_sibling();
         }
         let columns = columns.borrow();
-        for (i, title) in titles.iter().enumerate().take(columns.len()) {
+        // The titles shown are those of the columns shown.
+        let shown: Vec<&Column> = columns.iter().filter(|c| c.view.is_visible()).collect();
+        for (i, title) in titles.iter().enumerate().take(shown.len()) {
             let Some(b) = title.compute_bounds(&v) else {
                 continue;
             };
             let edge = (b.x() + b.width()) as f64;
             if (x - edge).abs() <= 5.0 {
-                let column = &columns[i];
+                let column = shown[i];
                 let content = (0..selection.n_items())
                     .filter_map(|r| selection.item(r))
                     .map(|obj| text_width(&v, &(column.text)(&row_of(&obj))))
@@ -519,7 +691,11 @@ fn add_column(
     factory.connect_bind(move |_, item| {
         let item = item.downcast_ref::<gtk::ListItem>().expect("ListItem");
         if let Some(obj) = item.item() {
-            item.set_child(Some(&cell(&row_of(&obj))));
+            let row = row_of(&obj);
+            let child = cell(&row);
+            // For the right click (see `row_id_at`).
+            child.set_widget_name(&format!("row:{}", row.id()));
+            item.set_child(Some(&child));
         }
     });
     factory.connect_unbind(|_, item| {
@@ -581,10 +757,31 @@ fn latency_cell(row: &Row) -> gtk::Widget {
         b.add_css_class("warning");
         return b.upcast();
     }
+    if row.host.off_subnet {
+        let b = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        b.append(&gtk::Image::from_icon_name(Segment::OffSubnet.icon()));
+        b.append(&label("Fuori rete", &["caption-heading"]));
+        b.add_css_class("off-subnet");
+        b.set_tooltip_text(Some(
+            "Sullo stesso cavo, ma con un indirizzo di un'altra rete: il computer non lo raggiunge",
+        ));
+        return b.upcast();
+    }
     let text = row.host.rtt_ms.map(|r| format!("{r:.1} ms"));
     let l = optional_cell(text, &["numeric"], false);
     l.add_css_class("dim-label");
     l.upcast()
+}
+
+/// Where the device was found: "Nativa", the VLAN's tag or "Fuori rete".
+fn network_cell(row: &Row) -> gtk::Widget {
+    match row.segment {
+        Some(segment) => {
+            let l = label(&segment.short_label(), &["numeric", segment.css_class()]);
+            l.upcast()
+        }
+        None => label("", &[]).upcast(),
+    }
 }
 
 fn ports_cell(row: &Row) -> gtk::Widget {

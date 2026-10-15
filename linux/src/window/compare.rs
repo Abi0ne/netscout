@@ -4,9 +4,10 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use netscout_core::{diff_hosts, Host, HostChange, ProfileSummary, ScanDiff};
+use netscout_core::{diff_hosts, Host, HostChange, ProfileSummary, SavedProfile, ScanDiff};
 
 use super::Window;
+use crate::segment::{self, ScannedVlan};
 use crate::{detail, labels, table};
 
 impl Window {
@@ -21,10 +22,33 @@ impl Window {
         let Some(summary) = self.profiles.borrow().iter().find(|p| p.id == id).cloned() else {
             return;
         };
-        let diff = diff_hosts(saved.hosts, saved.offline_hosts, self.live_hosts());
-        let target_differs = saved.target != *self.scanned_target.borrow();
+        // Only the networks this scan took in: the devices of the profile's
+        // other VLANs were not looked for, so they are neither gone nor off.
+        let others = self.other_vlans(&saved);
+        let keep = |hosts: Vec<Host>| -> Vec<Host> {
+            hosts
+                .into_iter()
+                .filter(|h| !segment::is_in(&others, h))
+                .collect()
+        };
+        let target_differs = segment::native_target(&saved.target)
+            != segment::native_target(&self.scanned_target.borrow());
+        let diff = diff_hosts(
+            keep(saved.hosts),
+            keep(saved.offline_hosts),
+            self.live_hosts(),
+        );
         let depth_differs = saved.scan_profile != self.scanned_profile.get();
         self.show_comparison(summary, diff, target_differs, depth_differs);
+    }
+
+    /// The VLANs of `saved` this scan did not take in.
+    pub(super) fn other_vlans(&self, saved: &SavedProfile) -> Vec<ScannedVlan> {
+        let scanned = self.scanned_vlan.get().map(|v| v.tag);
+        segment::profile_vlans(&saved.vlans)
+            .into_iter()
+            .filter(|v| Some(v.tag) != scanned)
+            .collect()
     }
 
     fn show_comparison(

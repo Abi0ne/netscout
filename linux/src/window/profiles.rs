@@ -1,7 +1,8 @@
 //! The saved-profiles tab (the list of profiles in the sidebar, searchable,
-//! and, for the selected one, the devices it recorded with the user's
-//! notes), saving a finished scan as a profile, exporting profiles as CSV,
-//! and the notes, of a profile or of the scan.
+//! and, for the selected one, the devices it recorded with the user's notes
+//! and, for a profile with tagged VLANs, a choice of network), saving a
+//! finished scan as a profile, exporting profiles as CSV and importing them
+//! back, and the notes, of a profile or of the scan.
 //!
 //! Notes are edited as drafts (`note_drafts`, by profile) and written only
 //! by "Salva"; closing the window with drafts asks what to do with them. The
@@ -9,17 +10,19 @@
 //! network was recognized as.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use netscout_core::{
-    device_key, match_profile, profiles_csv, Host, ProfileMatch, ProfileSummary, SavedProfile,
+    device_key, match_profile, profiles_csv, profiles_from_csv, Host, ProfileMatch,
+    ProfileSummary, SavedProfile, ScanError,
 };
 
 use super::{NoteSource, Window};
 use crate::labels;
+use crate::segment::{self, Segment};
 use crate::table::{self, FilterState, Row, Table};
 
 pub(super) struct ProfilesWidgets {
@@ -31,6 +34,11 @@ pub(super) struct ProfilesWidgets {
     detail_stack: gtk::Stack,
     title: gtk::Label,
     subtitle: gtk::Label,
+    /// The profile's networks (a profile with tagged VLANs): all, the native
+    /// one, each VLAN, off-network.
+    segments: adw::ToggleGroup,
+    /// The profile the network choice was made on.
+    segments_profile: RefCell<String>,
     pub table: Table,
     filter: Rc<RefCell<FilterState>>,
     unsaved_box: gtk::Box,
@@ -106,16 +114,22 @@ pub(super) fn build(notes: table::Notes) -> ProfilesWidgets {
     unsaved_box.append(&save_notes);
     unsaved_box.set_visible(false);
 
+    let segments = adw::ToggleGroup::builder()
+        .halign(gtk::Align::Start)
+        .margin_start(16)
+        .margin_end(16)
+        .margin_bottom(12)
+        .visible(false)
+        .build();
+
     let filter = Rc::new(RefCell::new(FilterState::default()));
     let table = table::build(filter.clone(), Some(notes));
-    let table_scroller = gtk::ScrolledWindow::new();
-    table_scroller.set_child(Some(&table.view));
-    table_scroller.set_vexpand(true);
     let detail = gtk::Box::new(gtk::Orientation::Vertical, 0);
     detail.append(&header);
     detail.append(&unsaved_box);
+    detail.append(&segments);
     detail.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    detail.append(&table_scroller);
+    detail.append(&table.widget);
 
     let detail_stack = gtk::Stack::new();
     detail_stack.add_named(
@@ -136,6 +150,8 @@ pub(super) fn build(notes: table::Notes) -> ProfilesWidgets {
         detail_stack,
         title,
         subtitle,
+        segments,
+        segments_profile: RefCell::new(String::new()),
         table,
         filter,
         unsaved_box,
@@ -196,6 +212,18 @@ impl Window {
             &weak,
             |this, _: &gtk::SearchEntry| {
                 this.rebuild_profile_list();
+            },
+        ));
+        p.segments.connect_active_name_notify(super::with(
+            &weak,
+            |this, group: &adw::ToggleGroup| {
+                let segment = group.active_name().and_then(|n| segment_of_name(&n));
+                this.w.profiles.filter.borrow_mut().segment = segment;
+                this.w
+                    .profiles
+                    .table
+                    .filter
+                    .changed(gtk::FilterChange::Different);
             },
         ));
     }
@@ -344,10 +372,27 @@ impl Window {
         ));
         self.update_profile_buttons();
         p.table.store.remove_all();
+        let saved = self
+            .saved
+            .borrow()
+            .iter()
+            .find(|s| s.id == summary.id)
+            .cloned();
+        let vlans = saved
+            .as_ref()
+            .map(|s| segment::profile_vlans(&s.vlans))
+            .unwrap_or_default();
+        // Another profile: all its networks again.
+        if p.segments_profile.replace(summary.id.clone()) != summary.id {
+            p.filter.borrow_mut().segment = None;
+        }
+        self.rebuild_segment_picker(saved.as_ref(), &vlans);
+        p.table.set_network_column(!vlans.is_empty());
         {
             // The profile's devices narrow to those matching the search,
             // unless the profile itself (name, network) matches.
             let mut filter = p.filter.borrow_mut();
+            filter.vlans = vlans.clone();
             filter.notes = self.notes_of(&summary.id);
             filter.query = if self.profile_match(&summary.id) == ProfileMatch::Devices {
                 self.search_query()
@@ -356,21 +401,17 @@ impl Window {
             };
         }
         p.table.filter.changed(gtk::FilterChange::Different);
-        let saved = self
-            .saved
-            .borrow()
-            .iter()
-            .find(|s| s.id == summary.id)
-            .cloned();
         if let Some(saved) = saved {
             let rows = saved
                 .hosts
                 .into_iter()
                 .map(|host| Row {
+                    segment: Segment::of(&host, &vlans),
                     host,
                     offline: false,
                 })
                 .chain(saved.offline_hosts.into_iter().map(|host| Row {
+                    segment: Segment::of(&host, &vlans),
                     host,
                     offline: true,
                 }))
@@ -380,6 +421,53 @@ impl Window {
         }
         p.detail_stack.set_visible_child_name("profile");
         self.update_unsaved_ui();
+    }
+
+    /// The profile's networks, as the scan's sidebar shows them: all, the
+    /// native one, the VLANs, off-network (a profile with VLANs only).
+    fn rebuild_segment_picker(&self, saved: Option<&SavedProfile>, vlans: &[segment::ScannedVlan]) {
+        let p = &self.w.profiles;
+        let group = &p.segments;
+        let current = p.filter.borrow().segment;
+        group.remove_all();
+        group.set_visible(!vlans.is_empty());
+        let Some(saved) = saved.filter(|_| !vlans.is_empty()) else {
+            return;
+        };
+        let all: Vec<Host> = saved
+            .hosts
+            .iter()
+            .chain(&saved.offline_hosts)
+            .cloned()
+            .collect();
+        group.add(
+            adw::Toggle::builder()
+                .label(format!("Tutte ({})", all.len()))
+                .name("all")
+                .build(),
+        );
+        for (segment, hosts) in Segment::groups(&all, vlans) {
+            group.add(
+                adw::Toggle::builder()
+                    .label(format!("{} ({})", segment.label(), hosts.len()))
+                    .name(name_of_segment(segment))
+                    .build(),
+            );
+        }
+        group.set_tooltip_text(Some(
+            &std::iter::once(format!(
+                "Rete nativa {}",
+                segment::native_target(&saved.target)
+            ))
+            .chain(vlans.iter().map(|v| format!("VLAN {} {}", v.tag, v.network)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        ));
+        let name = current.map(name_of_segment).unwrap_or_else(|| "all".into());
+        group.set_active_name(Some(&name));
+        if group.active_name().as_deref() != Some(name.as_str()) {
+            group.set_active_name(Some("all"));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -793,6 +881,191 @@ impl Window {
         });
     }
 
+    // -----------------------------------------------------------------------
+    // CSV import
+    // -----------------------------------------------------------------------
+
+    /// Ask for CSV files exported by NetScout and add their profiles, asking
+    /// what to do with each one named like a saved profile.
+    pub(super) fn import_csv(self: &Rc<Self>) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("CSV"));
+        filter.add_suffix("csv");
+        filter.add_mime_type("text/csv");
+        filter.add_mime_type("text/plain");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder()
+            .title("Importa profili da CSV")
+            .filters(&filters)
+            .modal(true)
+            .build();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let Ok(files) = dialog.open_multiple_future(Some(&this.window)).await else {
+                return;
+            };
+            let paths: Vec<std::path::PathBuf> = (0..files.n_items())
+                .filter_map(|i| files.item(i).and_downcast::<gio::File>())
+                .filter_map(|f| f.path())
+                .collect();
+            this.import_profiles(paths).await;
+        });
+    }
+
+    /// Add the profiles of the CSV files at `paths` and show the first one.
+    async fn import_profiles(self: &Rc<Self>, paths: Vec<std::path::PathBuf>) {
+        let Some(store) = self.profile_store.clone() else {
+            return;
+        };
+        let mut read: Vec<SavedProfile> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for path in &paths {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // As exported (UTF-8); a spreadsheet may save it otherwise.
+            let parsed = std::fs::read(path)
+                .map_err(|e| e.to_string())
+                .map(|bytes| profiles_from_csv(String::from_utf8_lossy(&bytes).into_owned()));
+            match parsed {
+                Ok(Ok(profiles)) => read.extend(profiles),
+                Ok(Err(ScanError::InvalidConfig(_))) => {
+                    failed.push(format!("«{name}» non è un CSV esportato da NetScout."))
+                }
+                Ok(Err(e)) => failed.push(format!("«{name}»: {e}")),
+                Err(e) => failed.push(format!("«{name}»: {e}")),
+            }
+        }
+        let names: HashSet<String> = self.profiles.borrow().iter().map(|p| p.name.clone()).collect();
+        let mut left = read.iter().filter(|p| names.contains(&p.name)).count();
+        let mut for_all: Option<Conflict> = None;
+        let mut imported: Vec<ProfileSummary> = Vec::new();
+        for mut profile in read {
+            let mut replacing = None;
+            let existing = self
+                .profiles
+                .borrow()
+                .iter()
+                .find(|p| p.name == profile.name)
+                .cloned();
+            if let Some(saved) = existing {
+                left = left.saturating_sub(1);
+                let conflict = match for_all {
+                    Some(c) => c,
+                    None => {
+                        let (c, all) = self.ask_import_conflict(&saved, &profile, left).await;
+                        if all {
+                            for_all = Some(c);
+                        }
+                        c
+                    }
+                };
+                match conflict {
+                    Conflict::Replace => {
+                        replacing = Some(saved.id.clone());
+                        self.note_drafts.borrow_mut().remove(&saved.id);
+                    }
+                    Conflict::Copy => profile.name = self.copy_name(&profile.name),
+                    Conflict::Skip => continue,
+                }
+            }
+            let name = profile.name.clone();
+            match store.clone().import(profile, replacing) {
+                Ok(summary) => {
+                    imported.push(summary);
+                    if let Ok(list) = store.clone().list() {
+                        *self.profiles.borrow_mut() = list;
+                    }
+                }
+                Err(e) => failed.push(format!("«{name}»: {e}")),
+            }
+        }
+        self.refresh_profiles();
+        if let Some(first) = imported.first() {
+            self.show_profile_page(&first.id);
+        }
+        if !failed.is_empty() {
+            self.show_error(&failed.join("\n"));
+        }
+    }
+
+    /// What to do with `imported`, named like the saved profile `saved`;
+    /// and whether to do the same for the `left` others named like a saved
+    /// one.
+    async fn ask_import_conflict(
+        self: &Rc<Self>,
+        saved: &ProfileSummary,
+        imported: &SavedProfile,
+        left: usize,
+    ) -> (Conflict, bool) {
+        let describe = |date: i64, up: usize, off: usize| {
+            format!(
+                "salvato {}, {up} dispositivi{}",
+                labels::format_time(date, true),
+                if off > 0 {
+                    format!(" e {off} spenti")
+                } else {
+                    String::new()
+                }
+            )
+        };
+        let mut body = format!(
+            "Nell'app: {}.\nNel file: {}.",
+            describe(
+                saved.created_at,
+                saved.host_count as usize,
+                saved.offline_count as usize
+            ),
+            describe(
+                imported.created_at,
+                imported.hosts.len(),
+                imported.offline_hosts.len()
+            ),
+        );
+        if self.note_drafts.borrow().contains_key(&saved.id) {
+            body.push_str("\n\nSostituendolo, anche le note non salvate del profilo andranno perse.");
+        }
+        let dialog = adw::AlertDialog::new(
+            Some(&format!("Esiste già un profilo «{}»", saved.name)),
+            Some(&body),
+        );
+        dialog.add_responses(&[
+            ("skip", "Salta"),
+            ("copy", "Importa come copia"),
+            ("replace", "Sostituisci"),
+        ]);
+        dialog.set_response_appearance("replace", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("replace"));
+        dialog.set_close_response("skip");
+        let same = gtk::CheckButton::with_label(&format!(
+            "Fai lo stesso per gli altri {left} con nome già presente"
+        ));
+        if left > 0 {
+            dialog.set_extra_child(Some(&same));
+        }
+        let response = dialog.choose_future(Some(&self.window)).await;
+        let conflict = match response.as_str() {
+            "replace" => Conflict::Replace,
+            "copy" => Conflict::Copy,
+            _ => Conflict::Skip,
+        };
+        (conflict, left > 0 && same.is_active())
+    }
+
+    /// `name` with "(importato)", numbered if that is taken too.
+    fn copy_name(&self, name: &str) -> String {
+        let taken: HashSet<String> = self.profiles.borrow().iter().map(|p| p.name.clone()).collect();
+        let mut candidate = format!("{name} (importato)");
+        let mut n = 2;
+        while taken.contains(&candidate) {
+            candidate = format!("{name} (importato {n})");
+            n += 1;
+        }
+        candidate
+    }
+
     /// The profiles tab's compare button.
     pub(super) fn update_profile_buttons(&self) {
         let selected = self.selected_profile_id().is_some();
@@ -880,6 +1153,11 @@ impl Window {
                         self.show_error(&format!("Note non copiate nel nuovo profilo: {e}"));
                     }
                 }
+                if let Some(vlan) = self.scanned_vlan.get() {
+                    if let Err(e) = store.clone().set_vlans(saved.id.clone(), vec![vlan.to_profile()]) {
+                        self.show_error(&format!("VLAN non salvata nel profilo: {e}"));
+                    }
+                }
                 *self.saved_scan_profile.borrow_mut() = Some(saved.id);
                 self.refresh_profiles();
                 self.scan_notes_changed();
@@ -889,6 +1167,8 @@ impl Window {
     }
 
     /// Replace profile `id` with this scan: the devices up and those off.
+    /// The profile's other VLANs, scanned another time, stay as they were;
+    /// the native network and this scan's VLAN are replaced.
     pub(super) fn update_profile(&self, id: &str) -> bool {
         let Some(store) = &self.profile_store else {
             return false;
@@ -896,13 +1176,45 @@ impl Window {
         if !self.has_finished_scan() {
             return false;
         }
-        let result = store.clone().update(
-            id.to_string(),
-            self.scanned_target.borrow().clone(),
-            self.scanned_profile.get(),
-            self.live_hosts(),
-            self.offline_hosts(),
-        );
+        let saved = self.load_profile(id);
+        let others = saved
+            .as_ref()
+            .map(|s| self.other_vlans(s))
+            .unwrap_or_default();
+        let mut vlans: Vec<segment::ScannedVlan> =
+            others.iter().copied().chain(self.scanned_vlans()).collect();
+        vlans.sort_by_key(|v| v.tag);
+        let target = std::iter::once(segment::native_target(&self.scanned_target.borrow()))
+            .chain(vlans.iter().map(|v| v.network.to_string()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let kept = |hosts: Option<&Vec<Host>>| -> Vec<Host> {
+            hosts
+                .into_iter()
+                .flatten()
+                .filter(|h| segment::is_in(&others, h))
+                .cloned()
+                .collect()
+        };
+        let hosts: Vec<Host> = self
+            .live_hosts()
+            .into_iter()
+            .chain(kept(saved.as_ref().map(|s| &s.hosts)))
+            .collect();
+        let offline: Vec<Host> = self
+            .offline_hosts()
+            .into_iter()
+            .chain(kept(saved.as_ref().map(|s| &s.offline_hosts)))
+            .collect();
+        let result = store
+            .clone()
+            .update(id.to_string(), target, self.scanned_profile.get(), hosts, offline)
+            .and_then(|_| {
+                store.clone().set_vlans(
+                    id.to_string(),
+                    vlans.iter().map(|v| v.to_profile()).collect(),
+                )
+            });
         self.refresh_profiles();
         match result {
             Ok(_) => true,
@@ -968,6 +1280,34 @@ impl Window {
             this.refresh_profiles();
         });
         dialog.present(Some(&self.window));
+    }
+}
+
+/// What to do with an imported profile named like one already saved.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Conflict {
+    Replace,
+    Copy,
+    Skip,
+}
+
+/// The toggle name of a network in the profile's picker.
+fn name_of_segment(segment: Segment) -> String {
+    match segment {
+        Segment::Native => "native".into(),
+        Segment::Vlan(tag) => format!("vlan{tag}"),
+        Segment::OffSubnet => "off".into(),
+    }
+}
+
+fn segment_of_name(name: &str) -> Option<Segment> {
+    match name {
+        "native" => Some(Segment::Native),
+        "off" => Some(Segment::OffSubnet),
+        _ => name
+            .strip_prefix("vlan")
+            .and_then(|t| t.parse().ok())
+            .map(Segment::Vlan),
     }
 }
 

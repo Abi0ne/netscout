@@ -62,9 +62,12 @@ pub fn empty() -> gtk::Widget {
         .upcast()
 }
 
+/// The card of `host`; `network` says where it was found, after a scan with
+/// a tagged VLAN ("VLAN 69 · 172.20.20.0/24").
 pub fn build(
     host: &Host,
     offline: bool,
+    network: Option<String>,
     deep_scanning: bool,
     note: NoteCard,
     actions: Actions,
@@ -78,22 +81,31 @@ pub fn build(
     content.append(&header(host, offline));
     if offline {
         content.append(&wake_section(host, actions.wake, actions.forget));
+    } else if host.off_subnet {
+        // A device on the same cable with an address of another network.
+        let text = wrapped("Trovato sullo stesso cavo, ma con un indirizzo che non appartiene a nessuna rete del computer: ha risposto alle richieste di rilevamento (mDNS o il protocollo del produttore), però il computer non può raggiungerlo, quindi niente ping, porte o connessioni. Per gestirlo, cambiagli l'indirizzo con lo strumento del produttore o dai al computer un indirizzo nella sua rete.");
+        text.add_css_class("dim-label");
+        content.append(&text);
     }
     let (note_section, buffer, unsaved, caption) = note_section(note);
     content.append(&note_section);
-    content.append(&deep_scan_section(
-        host,
-        offline,
-        deep_scanning,
-        actions.deep_scan,
-    ));
-    content.append(&info_grid(host, offline));
-    content.append(&ports_section(
-        host,
-        offline,
-        actions.open_url,
-        actions.connect,
-    ));
+    if !host.off_subnet {
+        content.append(&deep_scan_section(
+            host,
+            offline,
+            deep_scanning,
+            actions.deep_scan,
+        ));
+    }
+    content.append(&info_grid(host, offline, network));
+    if !host.off_subnet {
+        content.append(&ports_section(
+            host,
+            offline,
+            actions.open_url,
+            actions.connect,
+        ));
+    }
 
     let scroller = gtk::ScrolledWindow::new();
     scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
@@ -239,6 +251,15 @@ fn header(host: &Host, offline: bool) -> gtk::Widget {
         badge.add_css_class("off-badge");
         badge.set_valign(gtk::Align::Center);
         row.append(&badge);
+    } else if host.off_subnet {
+        let badge = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        badge.append(&gtk::Image::from_icon_name(
+            crate::segment::Segment::OffSubnet.icon(),
+        ));
+        badge.append(&gtk::Label::new(Some("Fuori rete")));
+        badge.add_css_class("off-subnet-badge");
+        badge.set_valign(gtk::Align::Center);
+        row.append(&badge);
     }
     row.upcast()
 }
@@ -370,35 +391,39 @@ pub fn wake_button(host: &Host, compact: bool, wake: WakeFn) -> gtk::Widget {
     b.upcast()
 }
 
-fn info_grid(host: &Host, offline: bool) -> gtk::Widget {
+fn info_grid(host: &Host, offline: bool, network: Option<String>) -> gtk::Widget {
     let grid = gtk::Grid::new();
     grid.set_column_spacing(16);
     grid.set_row_spacing(8);
-    let mut rows: Vec<(&str, String, bool)> = vec![
-        ("Indirizzo IP", host.ip.clone(), true),
-        ("MAC", host.mac.clone().unwrap_or_else(|| "—".into()), true),
-        (
-            "Produttore",
-            host.vendor.clone().unwrap_or_else(|| mac_note(host)),
-            false,
-        ),
-        (
-            "Nomi",
-            if host.hostnames.is_empty() {
-                "—".into()
-            } else {
-                host.hostnames.join("\n")
-            },
-            false,
-        ),
-    ];
+    let mut rows: Vec<(&str, String, bool)> = vec![("Indirizzo IP", host.ip.clone(), true)];
+    if let Some(network) = network {
+        rows.push(("Rete", network, false));
+    }
+    rows.push(("MAC", host.mac.clone().unwrap_or_else(|| "—".into()), true));
+    rows.push((
+        "Produttore",
+        host.vendor.clone().unwrap_or_else(|| mac_note(host)),
+        false,
+    ));
+    if let Some(model) = &host.model {
+        rows.push(("Modello", model.clone(), false));
+    }
+    rows.push((
+        "Nomi",
+        if host.hostnames.is_empty() {
+            "—".into()
+        } else {
+            host.hostnames.join("\n")
+        },
+        false,
+    ));
     if offline {
         rows.push((
             "Visto l'ultima volta",
             labels::format_time(host.last_seen, true),
             false,
         ));
-    } else {
+    } else if !host.off_subnet {
         rows.push((
             "Latenza",
             host.rtt_ms

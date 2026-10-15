@@ -146,3 +146,65 @@ columnview row:hover .note-pencil {
   padding-right: 4px;
   min-width: 0;
 }
+
+/* Devices on the same cable with an address of another network. */
+.off-subnet {
+  color: var(--purple-3);
+}
+.off-subnet-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--purple-3);
+  background-color: color-mix(in srgb, var(--purple-3) 14%, transparent);
+}
+
+/* A network's heading in the sidebar (scan with a tagged VLAN). */
+.navigation-sidebar > row.segment-heading {
+  margin-top: 10px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  min-height: 0;
+}
+.navigation-sidebar > row.segment-heading:hover {
+  background: none;
+}
+
+/* The switch button: a small question mark on the device; it pulses while
+   listening. */
+.switch-mark {
+  font-size: 0.6em;
+  font-weight: 900;
+  margin-top: -4px;
+  margin-right: -5px;
+}
+@keyframes switch-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+.listening {
+  animation: switch-pulse 1.4s ease-in-out infinite;
+}
+
+/* One title bar, like the macOS app's: the sidebar's shade across all three
+   panes' header bars, no line along its bottom, and the panes' dividers only
+   below it (libadwaita draws them on the whole pane). */
+.uniform-titlebar toolbarview > .top-bar,
+.uniform-titlebar toolbarview > .top-bar headerbar {
+  background-color: var(--sidebar-bg-color);
+  box-shadow: none;
+}
+.uniform-titlebar toolbarview > .top-bar:backdrop,
+.uniform-titlebar toolbarview > .top-bar headerbar:backdrop {
+  background-color: var(--sidebar-backdrop-color);
+}
+.uniform-titlebar .sidebar-pane {
+  box-shadow: none;
+}
+.uniform-titlebar .pane-divider-end {
+  box-shadow: inset -1px 0 var(--sidebar-border-color);
+}
+.uniform-titlebar .pane-divider-start {
+  box-shadow: inset 1px 0 var(--sidebar-border-color);
+}

@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "netscout-core"
-version = "0.8.8"
+version = "1.0.5"
 dependencies = [
  "ipnet",
  "libc",
@@ -800,6 +800,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "libadwaita",
+ "libc",
  "netscout-core",
 ]
 

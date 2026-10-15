@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- The root helper NetScout starts with pkexec (netscout with the agent argument) for
+     tagged VLANs and the linked switch: the password is asked once per
+     session, with this message. -->
+<policyconfig>
+  <vendor>NetScout</vendor>
+  <vendor_url>https://github.com/Abi0ne/netscout</vendor_url>
+  <action id="io.github.abi0ne.NetScout.agent">
+    <description>Listen to the Ethernet port and create VLAN interfaces</description>
+    <description xml:lang="it">Ascoltare la porta Ethernet e creare interfacce VLAN</description>
+    <message>NetScout needs to listen to the Ethernet port to recognize the switch and the VLANs, and to create VLAN interfaces to scan tagged networks.</message>
+    <message xml:lang="it">NetScout deve ascoltare la porta Ethernet per riconoscere lo switch e le VLAN, e creare interfacce VLAN per scansionare le reti taggate.</message>
+    <icon_name>io.github.abi0ne.NetScout</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/netscout</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">--agent</annotate>
+  </action>
+</policyconfig>

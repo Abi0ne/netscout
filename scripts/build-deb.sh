@@ -24,6 +24,7 @@ trap 'rm -rf "$PKG"' EXIT
 install -Dm755 "$TARGET/release/netscout" "$PKG/usr/bin/netscout"
 install -Dm644 "$ROOT/linux/data/$APP_ID.desktop" "$PKG/usr/share/applications/$APP_ID.desktop"
 install -Dm644 "$ROOT/linux/data/$APP_ID.metainfo.xml" "$PKG/usr/share/metainfo/$APP_ID.metainfo.xml"
+install -Dm644 "$ROOT/linux/data/$APP_ID.policy" "$PKG/usr/share/polkit-1/actions/$APP_ID.policy"
 for icon in "$ROOT"/linux/data/icons/hicolor/*/apps/$APP_ID.png; do
   size="$(basename "$(dirname "$(dirname "$icon")")")"
   install -Dm644 "$icon" "$PKG/usr/share/icons/hicolor/$size/apps/$APP_ID.png"
@@ -38,6 +39,7 @@ Maintainer: Giulio Mancarella <giulio.mancarella@gmail.com>
 Section: net
 Priority: optional
 Depends: libc6, libgtk-4-1 (>= 4.16), libadwaita-1-0 (>= 1.7)
+Recommends: pkexec, iproute2
 Suggests: expect, openssh-client, telnet, remmina
 Homepage: https://github.com/Abi0ne/netscout
 Installed-Size: $(du -sk "$PKG/usr" | cut -f1)
@@ -45,7 +47,8 @@ Description: Fast, non-privileged LAN network scanner
  NetScout finds the devices on the local network and tells what they are:
  IP address, MAC, vendor, name, device type, latency and open ports. It
  saves scans as profiles, compares them, and wakes devices with
- Wake-on-LAN. No administrator privileges needed.
+ Wake-on-LAN. No administrator privileges needed, except to scan a tagged
+ VLAN on the same cable or identify the switch (asked once, via pkexec).
 EOF
 
 mkdir -p "$ROOT/dist"

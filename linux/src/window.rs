@@ -6,6 +6,12 @@
 //! devices by type at the top, with the scan controls pinned at the bottom
 //! (on two rows when the window is short); a status bar runs below.
 //!
+//! When the scan's interface is a wired port, a tagged VLAN on the same cable
+//! can be scanned along with the target (`vlan`, options in `vlan_ui`); the
+//! results are then split by network (native, VLAN, off-network). The
+//! header's switch button tells which switch and port the cable ends in
+//! (`switch`).
+//!
 //! State lives on the GTK main thread. Engine callbacks arrive on runtime
 //! threads; [`Bridge`] forwards them through a channel that a main-loop future
 //! drains. Host updates are coalesced and applied at most every 150 ms, like
@@ -15,6 +21,8 @@
 mod compare;
 mod connect;
 mod profiles;
+mod switch;
+mod vlan_ui;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -30,7 +38,9 @@ use netscout_core::{
     ScanProfile, Scanner, Summary,
 };
 
+use crate::segment::{self, ScannedVlan, Segment};
 use crate::table::{self, FilterState, Row, Table};
+use crate::vlan::{self, LinkedSwitch, TaggedVlan};
 use crate::{debug_log, detail, labels};
 
 /// Below this sidebar height the scan controls take two rows.
@@ -122,7 +132,11 @@ struct Widgets {
     profile: adw::ToggleGroup,
     profile_row: gtk::Box,
     scan_button: gtk::Button,
+    /// "Reset VLAN", beside the scan button.
+    reset_button: gtk::Button,
     scan_panel: gtk::Box,
+    vlan: vlan_ui::VlanWidgets,
+    switch: switch::SwitchWidgets,
     progress_box: gtk::Box,
     progress_bar: gtk::ProgressBar,
     progress_title: gtk::Label,
@@ -147,6 +161,7 @@ struct Widgets {
     profile_search: gtk::SearchEntry,
     profile_compare: gtk::Button,
     export_menu: gtk::MenuButton,
+    import_button: gtk::Button,
     profiles: profiles::ProfilesWidgets,
 }
 
@@ -186,13 +201,28 @@ pub struct Window {
     w: Widgets,
 
     networks: RefCell<Vec<NetworkInfo>>,
+    /// The interface the target's network is reached through. Two
+    /// interfaces can be on the same network (Wi-Fi and Ethernet in the
+    /// office), so the target alone does not say which one was chosen.
+    interface: RefCell<Option<String>>,
+    /// A tagged VLAN on the same cable, scanned along with the target.
+    vlan: Rc<TaggedVlan>,
+    /// The switch at the other end of the scan interface's cable.
+    linked_switch: Rc<LinkedSwitch>,
     generation: Cell<u64>,
     scanning: Cell<bool>,
+    /// Activating the VLAN before the scan starts (it can be stopped).
+    starting: Cell<bool>,
+    /// Bumped to drop an activation in progress.
+    start_serial: Cell<u64>,
     /// The last scan ran to the end (it can be saved or compared).
     finished: Cell<bool>,
     /// Target and depth of the last scan started (what a saved profile records).
     scanned_target: RefCell<String>,
     scanned_profile: Cell<ScanProfile>,
+    /// The tagged VLAN the last scan took in along with the target, if any:
+    /// its devices are then told apart by network.
+    scanned_vlan: Cell<Option<ScannedVlan>>,
     /// IPs with a deep single-host scan in flight.
     deep_scanning: RefCell<HashSet<String>>,
     pending: RefCell<HashMap<String, Host>>,
@@ -226,6 +256,13 @@ pub struct Window {
     /// Set while the window itself moves the target/dropdown, so their change
     /// handlers don't echo the update back.
     syncing_target: Cell<bool>,
+    /// The VLAN menu's entries, as shown.
+    vlan_choices: RefCell<Vec<vlan_ui::Choice>>,
+    /// Set while the VLAN options are brought up to date.
+    syncing_vlan: Cell<bool>,
+    /// Open the switch's popover again when its answer comes (it closed
+    /// while the password was asked).
+    switch_reopen: Cell<bool>,
     /// Set while rows are replaced, so the selection churn doesn't rebuild
     /// the device card on every step.
     quiet_selection: Cell<bool>,
@@ -298,9 +335,15 @@ impl Window {
             .tooltip_text("Confronta con la scansione corrente")
             .build();
         let export_menu = export_menu_button();
+        let import_button = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text("Importa CSV: ricrea i profili da un file CSV esportato da NetScout, con note e VLAN")
+            .action_name("win.import-csv")
+            .build();
         for w in [
             profile_search.upcast_ref::<gtk::Widget>(),
             profile_compare.upcast_ref(),
+            import_button.upcast_ref(),
             export_menu.upcast_ref(),
         ] {
             w.set_visible(false);
@@ -309,6 +352,7 @@ impl Window {
         end.append(&content_end);
         end.append(&profile_search);
         end.append(&profile_compare);
+        end.append(&import_button);
         end.append(&export_menu);
         let content_header = adw::HeaderBar::builder()
             .title_widget(&adw::Bin::new())
@@ -357,10 +401,12 @@ impl Window {
             .bidirectional()
             .sync_create()
             .build();
+        let switch = switch::build();
         let trailing = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         trailing.set_hexpand(true);
         trailing.append(&search);
         trailing.append(&detail_toggle);
+        trailing.append(&switch.button);
         let sidebar_toggle = gtk::ToggleButton::builder()
             .icon_name("sidebar-show-symbolic")
             .tooltip_text("Mostra o nascondi la barra laterale")
@@ -386,6 +432,11 @@ impl Window {
         title.set_valign(gtk::Align::Start);
         title.set_can_target(false);
         let overlay = gtk::Overlay::new();
+        // One title bar, the sidebar's shade from edge to edge, with no
+        // lines along or through it (see style.css).
+        overlay.add_css_class("uniform-titlebar");
+        sidebar_stack.add_css_class("pane-divider-end");
+        detail_bin.add_css_class("pane-divider-start");
         overlay.set_child(Some(&toolbar));
         overlay.add_overlay(&title);
         window.set_content(Some(&overlay));
@@ -424,7 +475,10 @@ impl Window {
             profile: sw.profile,
             profile_row: sw.profile_row,
             scan_button: sw.scan_button,
+            reset_button: sw.reset_button,
             scan_panel: sw.scan_panel,
+            vlan: sw.vlan,
+            switch,
             progress_box: sw.progress_box,
             progress_bar: sw.progress_bar,
             progress_title: sw.progress_title,
@@ -448,11 +502,14 @@ impl Window {
             profile_search,
             profile_compare,
             export_menu,
+            import_button,
             profiles: pw,
         };
 
         let profiles_dir = glib::user_data_dir().join("NetScout").join("Profiles");
         let profile_store = open_profile_store(profiles_dir.to_string_lossy().into_owned());
+        let vlan = TaggedVlan::new();
+        let linked_switch = LinkedSwitch::new(vlan.clone());
         let this = Rc::new(Self {
             window,
             scanner: new_scanner().ok(),
@@ -462,11 +519,17 @@ impl Window {
             filter_state,
             w,
             networks: RefCell::new(Vec::new()),
+            interface: RefCell::new(None),
+            vlan,
+            linked_switch,
             generation: Cell::new(0),
             scanning: Cell::new(false),
+            starting: Cell::new(false),
+            start_serial: Cell::new(0),
             finished: Cell::new(false),
             scanned_target: RefCell::new(String::new()),
             scanned_profile: Cell::new(ScanProfile::Standard),
+            scanned_vlan: Cell::new(None),
             deep_scanning: RefCell::new(HashSet::new()),
             pending: RefCell::new(HashMap::new()),
             flush_scheduled: Cell::new(false),
@@ -484,15 +547,26 @@ impl Window {
             suggested: Cell::new(false),
             pending_compare: RefCell::new(None),
             syncing_target: Cell::new(false),
+            vlan_choices: RefCell::new(Vec::new()),
+            syncing_vlan: Cell::new(false),
+            switch_reopen: Cell::new(false),
             quiet_selection: Cell::new(false),
             notice_serial: Cell::new(0),
         });
 
         *weak_cell.borrow_mut() = Rc::downgrade(&this);
+        let weak = Rc::downgrade(&this);
+        this.table.set_forget(move |id| {
+            if let Some(this) = weak.upgrade() {
+                this.forget_offline(id);
+            }
+        });
         this.connect_signals();
         this.connect_profile_signals();
         this.install_actions(app);
         this.connect_notes_section();
+        this.connect_vlan();
+        this.connect_switch();
         this.place_header_widgets();
         this.watch_layout();
 
@@ -515,8 +589,21 @@ impl Window {
         }
         this.refresh_profiles();
         this.update_scan_ui();
+        this.update_vlan_ui();
         this.update_notes_section();
         this
+    }
+
+    /// `netscout --deep`: the deep profile.
+    pub fn set_deep_profile(&self) {
+        self.w
+            .profile
+            .set_active_name(Some(labels::profile_name(ScanProfile::Deep)));
+    }
+
+    /// The window is going: the VLAN helper removes what it made and exits.
+    pub fn shutdown(&self) {
+        self.vlan.shutdown();
     }
 
     // -----------------------------------------------------------------------
@@ -532,19 +619,20 @@ impl Window {
                     return;
                 }
                 let i = dd.selected() as usize;
-                if let Some(net) = this.networks.borrow().get(i) {
-                    this.set_target(&net.cidr);
-                }
+                this.pick_network(i);
             }));
         self.w
             .target
-            .connect_changed(with(&weak, |this, _: &gtk::Entry| this.sync_dropdown()));
+            .connect_changed(with(&weak, |this, _: &gtk::Entry| this.match_interface()));
         self.w
             .target
             .connect_activate(with(&weak, |this, _: &gtk::Entry| this.start_scan()));
         self.w
             .scan_button
             .connect_clicked(with(&weak, |this, _: &gtk::Button| this.toggle_scan()));
+        self.w
+            .reset_button
+            .connect_clicked(with(&weak, |this, _: &gtk::Button| this.reset_vlan()));
 
         self.w
             .search
@@ -555,13 +643,13 @@ impl Window {
         let weak2 = weak.clone();
         self.w.types_list.connect_row_activated(move |_, row| {
             let Some(this) = weak2.upgrade() else { return };
-            let picked = type_of_row(row);
-            let current = this.filter_state.borrow().device_type;
-            this.filter_state.borrow_mut().device_type = if picked.is_some() && picked == current {
-                None
-            } else {
-                picked
-            };
+            let (segment, picked) = filter_of_row(row);
+            {
+                let mut f = this.filter_state.borrow_mut();
+                let same = f.segment == segment && f.device_type == picked;
+                f.device_type = if picked.is_some() && same { None } else { picked };
+                f.segment = segment;
+            }
             this.refilter();
             this.rebuild_types();
         });
@@ -658,6 +746,7 @@ impl Window {
         for w in [
             self.w.profile_search.upcast_ref::<gtk::Widget>(),
             self.w.profile_compare.upcast_ref(),
+            self.w.import_button.upcast_ref(),
             self.w.export_menu.upcast_ref(),
         ] {
             w.set_visible(!scan);
@@ -811,6 +900,7 @@ impl Window {
             Box::new(|this| this.export_selected()),
         );
         add("export-listed", &[], Box::new(|this| this.export_listed()));
+        add("import-csv", &[], Box::new(|this| this.import_csv()));
         add("export-all", &[], Box::new(|this| this.export_all()));
         add(
             "rename-profile",
@@ -829,14 +919,7 @@ impl Window {
             let (Some(this), Some(i)) = (weak3.upgrade(), i.and_then(|v| v.get::<u32>())) else {
                 return;
             };
-            let cidr = this
-                .networks
-                .borrow()
-                .get(i as usize)
-                .map(|n| n.cidr.clone());
-            if let Some(cidr) = cidr {
-                this.set_target(&cidr);
-            }
+            this.pick_network(i as usize);
         });
         self.window.add_action(&pick);
         add(
@@ -864,7 +947,7 @@ impl Window {
     // Networks and target
     // -----------------------------------------------------------------------
 
-    fn detect_networks(&self) {
+    fn detect_networks(self: &Rc<Self>) {
         let Some(scanner) = &self.scanner else { return };
         match scanner.clone().detect_networks() {
             Ok(nets) => {
@@ -876,6 +959,7 @@ impl Window {
                         self.set_target(&net.cidr);
                     }
                 }
+                self.refresh_vlan_ports();
             }
             Err(e) => self.show_error(&format!("Nessuna rete trovata: {e}")),
         }
@@ -939,6 +1023,20 @@ impl Window {
         let old = std::mem::replace(&mut *self.networks.borrow_mut(), current.clone());
         debug_log(&format!("networks changed: {current:?}"));
         self.rebuild_network_model();
+        self.refresh_vlan_ports();
+        // The VLAN interface coming and going is not news.
+        let names = |nets: &[NetworkInfo]| -> HashSet<String> {
+            nets.iter()
+                .map(|n| format!("{} {}", n.interface, n.cidr))
+                .collect()
+        };
+        let changed: Vec<String> = names(&old)
+            .symmetric_difference(&names(&current))
+            .cloned()
+            .collect();
+        if !changed.is_empty() && changed.iter().all(|c| vlan::is_own_vlan_interface(c)) {
+            return;
+        }
 
         let target_was_detected = old.iter().any(|n| n.cidr == target);
         let target_gone = !current.iter().any(|n| n.cidr == target);
@@ -983,17 +1081,84 @@ impl Window {
         self.sync_dropdown();
     }
 
-    /// Point the dropdown at the network matching the target, or "custom".
+    /// Point the dropdown at the interface and network chosen, or "custom".
     fn sync_dropdown(&self) {
         let target = self.target();
+        let interface = self.interface.borrow().clone();
         let nets = self.networks.borrow();
         let i = nets
             .iter()
-            .position(|n| n.cidr == target)
+            .position(|n| n.cidr == target && Some(&n.interface) == interface.as_ref())
             .unwrap_or(nets.len());
         self.syncing_target.set(true);
         self.w.net_dropdown.set_selected(i as u32);
         self.syncing_target.set(false);
+    }
+
+    /// The `i`-th network was chosen in the menu: its interface, then its
+    /// network as the target.
+    fn pick_network(self: &Rc<Self>, i: usize) {
+        let net = self.networks.borrow().get(i).cloned();
+        let Some(net) = net else { return };
+        self.set_interface(Some(net.interface.clone()));
+        self.set_target(&net.cidr);
+        self.sync_dropdown();
+    }
+
+    fn set_interface(self: &Rc<Self>, interface: Option<String>) {
+        *self.interface.borrow_mut() = interface.clone();
+        self.vlan.follow(interface.as_deref());
+        self.linked_switch.follow(self.switch_port().as_deref());
+        self.update_switch_ui();
+    }
+
+    /// Keep the chosen interface while it is on the target's network; else
+    /// take the one there that can carry VLANs (the cable over Wi-Fi), or the
+    /// first. A target that is no interface's network leaves none.
+    fn match_interface(self: &Rc<Self>) {
+        let target = self.target();
+        let same: Vec<String> = self
+            .networks
+            .borrow()
+            .iter()
+            .filter(|n| n.cidr == target)
+            .map(|n| n.interface.clone())
+            .collect();
+        let current = self.interface.borrow().clone();
+        match current.filter(|i| same.contains(i)) {
+            Some(i) => self.vlan.follow(Some(&i)),
+            None => {
+                let pick = same
+                    .iter()
+                    .find(|i| self.vlan.is_capable(i))
+                    .or(same.first())
+                    .cloned();
+                self.set_interface(pick);
+            }
+        }
+        self.sync_dropdown();
+    }
+
+    /// Offer the VLAN when the scan's interface can carry one.
+    fn refresh_vlan_ports(self: &Rc<Self>) {
+        self.vlan.refresh_capable();
+        self.match_interface();
+    }
+
+    /// The port to hear the switch on: the scan's interface when it is a
+    /// wired port, else the first wired port with a network (the computer
+    /// can be on the same network through Wi-Fi and the cable).
+    fn switch_port(&self) -> Option<String> {
+        if let Some(i) = self.interface.borrow().clone() {
+            if vlan::is_ethernet_port(&i) {
+                return Some(i);
+            }
+        }
+        self.networks
+            .borrow()
+            .iter()
+            .map(|n| n.interface.clone())
+            .find(|i| vlan::is_ethernet_port(i))
     }
 
     fn target(&self) -> String {
@@ -1017,7 +1182,7 @@ impl Window {
     // -----------------------------------------------------------------------
 
     fn toggle_scan(self: &Rc<Self>) {
-        if self.scanning.get() {
+        if self.scanning.get() || self.starting.get() {
             self.cancel();
         } else {
             self.start_scan();
@@ -1025,8 +1190,10 @@ impl Window {
     }
 
     pub fn start_scan(self: &Rc<Self>) {
-        let Some(scanner) = &self.scanner else { return };
-        if self.scanning.get() {
+        if self.scanner.is_none() || self.scanning.get() || self.starting.get() {
+            return;
+        }
+        if self.vlan.is_preparing() {
             return;
         }
         let target = self.target();
@@ -1034,12 +1201,76 @@ impl Window {
             self.show_error("Indica cosa scansionare (es. 192.168.1.0/24).");
             return;
         }
+        if !self.vlan.is_on() {
+            self.launch_scan(target, None);
+            return;
+        }
+        // The VLAN's interface first (it may ask for the password).
+        let active = self.vlan.active().map(|a| a.interface);
+        let others: Vec<NetworkInfo> = self
+            .networks
+            .borrow()
+            .iter()
+            .filter(|n| Some(&n.interface) != active.as_ref())
+            .cloned()
+            .collect();
+        let serial = self.start_serial.get() + 1;
+        self.start_serial.set(serial);
+        self.starting.set(true);
+        self.update_scan_ui();
+        let this = self.clone();
+        glib::spawn_future_local(async move {
+            let result = this.vlan.prepare(&others).await;
+            if this.start_serial.get() != serial {
+                this.update_scan_ui();
+                return;
+            }
+            this.starting.set(false);
+            match result {
+                Ok(active) => this.launch_scan(
+                    target,
+                    Some(ScannedVlan {
+                        tag: active.settings.tag,
+                        network: active.cidr,
+                    }),
+                ),
+                Err(e) => {
+                    this.update_scan_ui();
+                    this.show_error(&e.message());
+                }
+            }
+        });
+    }
+
+    /// Put the VLAN settings back as at launch: the option off, no tag, DHCP,
+    /// and the VLAN interface removed.
+    fn reset_vlan(&self) {
+        if !self.scanning.get() && !self.starting.get() {
+            self.vlan.reset();
+        }
+    }
+
+    fn launch_scan(self: &Rc<Self>, target: String, vlan: Option<ScannedVlan>) {
+        let Some(scanner) = &self.scanner else { return };
+        if self.scanning.get() {
+            return;
+        }
+        let targets: Vec<String> = std::iter::once(target.clone())
+            .chain(vlan.map(|v| v.network.to_string()))
+            .collect();
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
         self.pending.borrow_mut().clear();
         self.table.store.remove_all();
         self.deep_scanning.borrow_mut().clear();
-        self.filter_state.borrow_mut().device_type = None;
+        {
+            let mut f = self.filter_state.borrow_mut();
+            f.device_type = None;
+            f.segment = None;
+            f.vlans = vlan.into_iter().collect();
+        }
+        self.scanned_vlan.set(vlan);
+        self.table.set_network_column(vlan.is_some());
         self.finished.set(false);
         *self.recognized.borrow_mut() = None;
         self.recognition_basis.set(-1);
@@ -1048,7 +1279,7 @@ impl Window {
         *self.saved_scan_profile.borrow_mut() = None;
         self.update_recognized();
         self.scan_notes_changed();
-        *self.scanned_target.borrow_mut() = target.clone();
+        *self.scanned_target.borrow_mut() = targets.join(", ");
         self.scanned_profile.set(self.profile());
 
         let observer = Bridge {
@@ -1061,7 +1292,7 @@ impl Window {
             .clone()
             .set_name_servers(crate::settings::name_servers());
         let config = ScanConfig {
-            targets: vec![target.clone()],
+            targets: targets.clone(),
             profile,
             concurrency: 64,
             per_host_concurrency: 8,
@@ -1069,7 +1300,7 @@ impl Window {
         };
         match scanner.clone().start_scan(config, Box::new(observer)) {
             Ok(()) => {
-                debug_log(&format!("scan started: {target} {profile:?}"));
+                debug_log(&format!("scan started: {targets:?} {profile:?}"));
                 self.scanning.set(true);
                 self.update_progress(None);
             }
@@ -1081,6 +1312,9 @@ impl Window {
     }
 
     fn cancel(self: &Rc<Self>) {
+        // Still activating the VLAN: the scan will not start.
+        self.start_serial.set(self.start_serial.get() + 1);
+        self.starting.set(false);
         if let Some(scanner) = &self.scanner {
             let _ = scanner.clone().cancel();
         }
@@ -1251,7 +1485,7 @@ impl Window {
                 }
                 b.set_child(Some(
                     &adw::ButtonContent::builder()
-                        .icon_name("emblem-ok-symbolic")
+                        .icon_name("object-select-symbolic")
                         .label(text)
                         .can_shrink(true)
                         .build(),
@@ -1324,12 +1558,15 @@ impl Window {
                 }
             }
         }
+        let vlans = self.scanned_vlans();
         for host in hosts {
             selected_changed |= selected.as_deref() == Some(host.ip.as_str());
             let ip = host.ip.clone();
+            let segment = Segment::of(&host, &vlans);
             let item = glib::BoxedAnyObject::new(Row {
                 host,
                 offline: false,
+                segment,
             });
             match index.get(&ip) {
                 Some(&i) => store.splice(i, 1, &[item]),
@@ -1377,6 +1614,25 @@ impl Window {
         self.update_result_section();
         self.update_sidebar_hint();
         self.update_notes_section();
+    }
+
+    // -----------------------------------------------------------------------
+    // Networks of a scan with a tagged VLAN
+    // -----------------------------------------------------------------------
+
+    /// The last scan's VLAN, as a list (none or one).
+    fn scanned_vlans(&self) -> Vec<ScannedVlan> {
+        self.scanned_vlan.get().into_iter().collect()
+    }
+
+    /// The network a sidebar heading names: the target as written for the
+    /// native one, the VLAN's own network.
+    fn network_of(&self, segment: Segment) -> Option<String> {
+        match segment {
+            Segment::Native => Some(segment::native_target(&self.scanned_target.borrow())),
+            Segment::Vlan(_) => self.scanned_vlan.get().map(|v| v.network.to_string()),
+            Segment::OffSubnet => None,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1429,6 +1685,7 @@ impl Window {
             self.table.store.append(&glib::BoxedAnyObject::new(Row {
                 host: device.clone(),
                 offline: true,
+                segment: Segment::of(device, &self.scanned_vlans()),
             }));
         }
         self.after_rows_changed();
@@ -1470,12 +1727,24 @@ impl Window {
     }
 
     fn update_scan_ui(&self) {
-        let running = self.scanning.get();
+        let running = self.scanning.get() || self.starting.get();
+        // Stopped while the helper was still making the interface: it
+        // answers within its own time limit.
+        let closing = !running && self.vlan.is_preparing();
         let b = &self.w.scan_button;
         let icon = if running {
             "media-playback-stop-symbolic"
         } else {
             "media-playback-start-symbolic"
+        };
+        let label = if self.starting.get() {
+            "Ferma attivazione VLAN"
+        } else if running {
+            "Ferma"
+        } else if closing {
+            "Chiusura dell'attivazione…"
+        } else {
+            "Avvia scansione"
         };
         // Compact: a round button with the icon alone, beside the profile.
         if self.compact.get() {
@@ -1486,14 +1755,19 @@ impl Window {
             b.set_child(Some(
                 &adw::ButtonContent::builder()
                     .icon_name(icon)
-                    .label(if running { "Ferma" } else { "Avvia scansione" })
+                    .label(label)
+                    .can_shrink(true)
                     .build(),
             ));
             b.remove_css_class("circular");
             b.add_css_class("pill");
         }
-        b.set_tooltip_text(Some(if running {
+        b.set_tooltip_text(Some(if self.starting.get() {
+            "Interrompi l'attivazione della VLAN: la scansione non parte"
+        } else if running {
             "Ferma la scansione (Ctrl+R)"
+        } else if closing {
+            "Attendi la chiusura dell'attivazione della VLAN"
         } else {
             "Avvia la scansione (Ctrl+R)"
         }));
@@ -1504,10 +1778,25 @@ impl Window {
             b.remove_css_class("destructive-action");
             b.add_css_class("suggested-action");
         }
-        b.set_sensitive(self.scanner.is_some());
+        b.set_sensitive(self.scanner.is_some() && !closing);
         self.w.target.set_sensitive(!running);
         self.w.net_dropdown.set_sensitive(!running);
+        self.w.net_menu.set_sensitive(!running);
         self.w.profile.set_sensitive(!running);
+        self.w
+            .vlan
+            .set_sensitive(!running && !self.vlan.is_preparing());
+        // "Reset VLAN": when not scanning and the VLAN settings are not as
+        // at launch.
+        let r = &self.w.reset_button;
+        r.set_visible(
+            !running && !closing && (self.vlan.is_available() || self.vlan.active().is_some()),
+        );
+        r.set_sensitive(self.vlan.can_reset());
+        r.set_tooltip_text(Some(&match self.vlan.active() {
+            Some(a) => format!("Reset VLAN: toglie «Abilita VLAN scan», azzera le impostazioni VLAN e rimuove l'interfaccia {} dal computer", a.interface),
+            None => "Reset VLAN: toglie «Abilita VLAN scan» e azzera le impostazioni VLAN".into(),
+        }));
         self.update_content_page();
         self.update_result_section();
         self.update_profile_buttons();
@@ -1540,6 +1829,7 @@ impl Window {
         } else {
             gtk::Orientation::Vertical
         });
+        w.scan_button.set_hexpand(!compact);
         w.progress_title.set_visible(!compact);
         w.progress_detail.set_wrap(!compact);
         w.progress_detail.set_ellipsize(if compact {
@@ -1553,6 +1843,7 @@ impl Window {
             w.scan_panel.remove_css_class("compact");
         }
         self.update_scan_ui();
+        self.update_vlan_ui();
     }
 
     /// The sidebar's hint while the list is empty.
@@ -1702,37 +1993,54 @@ impl Window {
         self.update_content_page();
     }
 
-    /// The per-type breakdown: "Tutti" plus each type found, most common first.
+    /// The per-type breakdown: "Tutti" plus each type found, most common
+    /// first; after a scan with a tagged VLAN, by network first (each with
+    /// its "Tutti" and its types). A click filters the table to that network
+    /// and type.
     fn rebuild_types(&self) {
         let list = &self.w.types_list;
         list.remove_all();
         let live = self.live_hosts();
-        let mut counts: Vec<(DeviceType, u32)> = Vec::new();
-        for host in &live {
-            match counts.iter_mut().find(|(t, _)| *t == host.device_type) {
-                Some((_, n)) => *n += 1,
-                None => counts.push((host.device_type, 1)),
-            }
-        }
         self.w.types_group.set_visible(!live.is_empty());
-        counts.sort_by_key(|(t, n)| {
-            let order = labels::ALL_TYPES
-                .iter()
-                .position(|x| x == t)
-                .unwrap_or(usize::MAX);
-            (std::cmp::Reverse(*n), order)
-        });
-        let current = self.filter_state.borrow().device_type;
-        let all = type_row("Tutti", "view-grid-symbolic", live.len() as u32, None);
+        let (cur_segment, cur_type) = {
+            let f = self.filter_state.borrow();
+            (f.segment, f.device_type)
+        };
+        let all = type_row("Tutti", "view-grid-symbolic", live.len() as u32, None, None);
         list.append(&all);
-        if current.is_none() {
+        if cur_type.is_none() && cur_segment.is_none() {
             list.select_row(Some(&all));
         }
-        for (t, n) in counts {
-            let row = type_row(labels::device_label(t), labels::device_icon(t), n, Some(t));
-            list.append(&row);
-            if current == Some(t) {
-                list.select_row(Some(&row));
+        let groups = Segment::groups(&live, &self.scanned_vlans());
+        if groups.is_empty() {
+            for (t, n) in type_counts(&live) {
+                let row = type_row(labels::device_label(t), labels::device_icon(t), n, None, Some(t));
+                list.append(&row);
+                if cur_type == Some(t) {
+                    list.select_row(Some(&row));
+                }
+            }
+            return;
+        }
+        for (segment, hosts) in groups {
+            list.append(&segment_heading(segment, self.network_of(segment)));
+            let all = type_row("Tutti", segment.icon(), hosts.len() as u32, Some(segment), None);
+            list.append(&all);
+            if cur_segment == Some(segment) && cur_type.is_none() {
+                list.select_row(Some(&all));
+            }
+            for (t, n) in type_counts(&hosts) {
+                let row = type_row(
+                    labels::device_label(t),
+                    labels::device_icon(t),
+                    n,
+                    Some(segment),
+                    Some(t),
+                );
+                list.append(&row);
+                if cur_segment == Some(segment) && cur_type == Some(t) {
+                    list.select_row(Some(&row));
+                }
             }
         }
     }
@@ -1790,7 +2098,11 @@ impl Window {
                 }
             }),
         };
-        let card = detail::build(&host, offline, deep, note, self.detail_actions());
+        let network = Segment::of(&host, &self.scanned_vlans()).map(|s| match self.network_of(s) {
+            Some(n) => format!("{} · {n}", s.label()),
+            None => s.label(),
+        });
+        let card = detail::build(&host, offline, network, deep, note, self.detail_actions());
         if let (Some(profile), Some(buffer), Some(caption), Some(unsaved)) =
             (profile, card.note, card.caption, card.unsaved)
         {
@@ -1889,7 +2201,9 @@ struct SidebarWidgets {
     profile: adw::ToggleGroup,
     profile_row: gtk::Box,
     scan_button: gtk::Button,
+    reset_button: gtk::Button,
     scan_panel: gtk::Box,
+    vlan: vlan_ui::VlanWidgets,
     progress_box: gtk::Box,
     progress_bar: gtk::ProgressBar,
     progress_title: gtk::Label,
@@ -2028,9 +2342,11 @@ fn build_sidebar() -> (gtk::Widget, SidebarWidgets) {
         .visible(false)
         .build();
     net_menu.add_css_class("flat");
+    let vlan = vlan_ui::build();
     let target_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     target_row.append(&target);
     target_row.append(&net_menu);
+    target_row.append(&vlan.compact_button);
     let profile = adw::ToggleGroup::builder()
         .homogeneous(false)
         .hexpand(true)
@@ -2047,12 +2363,20 @@ fn build_sidebar() -> (gtk::Widget, SidebarWidgets) {
     profile.set_active_name(Some(labels::profile_name(ScanProfile::Standard)));
     let scan_button = gtk::Button::new();
     scan_button.add_css_class("pill");
+    scan_button.set_hexpand(true);
     scan_button.set_tooltip_text(Some("Avvia o ferma la scansione (Ctrl+R)"));
-    // The profile and the button: one above the other, side by side when
+    let reset_button = gtk::Button::from_icon_name("edit-undo-symbolic");
+    reset_button.add_css_class("circular");
+    reset_button.set_valign(gtk::Align::Center);
+    reset_button.set_visible(false);
+    let button_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    button_row.append(&scan_button);
+    button_row.append(&reset_button);
+    // The profile and the buttons: one above the other, side by side when
     // compact.
     let profile_row = gtk::Box::new(gtk::Orientation::Vertical, 8);
     profile_row.append(&profile);
-    profile_row.append(&scan_button);
+    profile_row.append(&button_row);
 
     let progress_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let progress_bar = gtk::ProgressBar::new();
@@ -2074,6 +2398,7 @@ fn build_sidebar() -> (gtk::Widget, SidebarWidgets) {
     scan_panel.append(&net_label);
     scan_panel.append(&net_dropdown);
     scan_panel.append(&target_row);
+    scan_panel.append(&vlan.full_slot);
     scan_panel.append(&profile_row);
     scan_panel.append(&progress_box);
 
@@ -2092,7 +2417,9 @@ fn build_sidebar() -> (gtk::Widget, SidebarWidgets) {
             profile,
             profile_row,
             scan_button,
+            reset_button,
             scan_panel,
+            vlan,
             progress_box,
             progress_bar,
             progress_title,
@@ -2173,9 +2500,16 @@ fn section(title: &str) -> gtk::Box {
     b
 }
 
-/// A device-type row: icon, name, count. The type is kept in the widget name
-/// (`all` = "Tutti").
-fn type_row(label: &str, icon: &str, count: u32, t: Option<DeviceType>) -> gtk::ListBoxRow {
+/// A device-type row: icon, name, count. The network and type are kept in
+/// the widget name: "all" for "Tutti", the type's index, or the network's
+/// code before a colon ("v69:3", "n:all"; see `filter_of_row`).
+fn type_row(
+    label: &str,
+    icon: &str,
+    count: u32,
+    segment: Option<Segment>,
+    t: Option<DeviceType>,
+) -> gtk::ListBoxRow {
     let b = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     b.append(&gtk::Image::from_icon_name(icon));
     let l = gtk::Label::new(Some(label));
@@ -2189,15 +2523,88 @@ fn type_row(label: &str, icon: &str, count: u32, t: Option<DeviceType>) -> gtk::
     let row = gtk::ListBoxRow::new();
     row.set_child(Some(&b));
     let index = t.and_then(|t| labels::ALL_TYPES.iter().position(|x| *x == t));
-    row.set_widget_name(&index.map_or("all".to_string(), |i| i.to_string()));
+    let kind = index.map_or("all".to_string(), |i| i.to_string());
+    row.set_widget_name(&match segment {
+        Some(s) => format!("{}:{kind}", segment_code(s)),
+        None => kind,
+    });
     row
 }
 
-fn type_of_row(row: &gtk::ListBoxRow) -> Option<DeviceType> {
-    row.widget_name()
+/// A network's heading in the sidebar's list: its name and its network.
+fn segment_heading(segment: Segment, network: Option<String>) -> gtk::ListBoxRow {
+    let b = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let name = gtk::Label::new(Some(&segment.label()));
+    name.add_css_class("heading");
+    if segment != Segment::Native {
+        name.add_css_class(segment.css_class());
+    }
+    b.append(&name);
+    if let Some(network) = network {
+        let n = gtk::Label::new(Some(&network));
+        n.add_css_class("dim-label");
+        n.add_css_class("numeric");
+        n.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        b.append(&n);
+    }
+    let row = gtk::ListBoxRow::new();
+    row.set_child(Some(&b));
+    row.set_activatable(false);
+    row.set_selectable(false);
+    row.add_css_class("segment-heading");
+    row.set_widget_name("heading");
+    row
+}
+
+fn segment_code(segment: Segment) -> String {
+    match segment {
+        Segment::Native => "n".into(),
+        Segment::Vlan(tag) => format!("v{tag}"),
+        Segment::OffSubnet => "o".into(),
+    }
+}
+
+/// The network and type a sidebar row filters on (see `type_row`).
+fn filter_of_row(row: &gtk::ListBoxRow) -> (Option<Segment>, Option<DeviceType>) {
+    let name = row.widget_name();
+    let (segment, kind) = match name.split_once(':') {
+        Some((code, kind)) => {
+            let segment = match code {
+                "n" => Some(Segment::Native),
+                "o" => Some(Segment::OffSubnet),
+                _ => code
+                    .strip_prefix('v')
+                    .and_then(|t| t.parse().ok())
+                    .map(Segment::Vlan),
+            };
+            (segment, kind)
+        }
+        None => (None, name.as_str()),
+    };
+    let t = kind
         .parse::<usize>()
         .ok()
-        .and_then(|i| labels::ALL_TYPES.get(i).copied())
+        .and_then(|i| labels::ALL_TYPES.get(i).copied());
+    (segment, t)
+}
+
+/// Each type among `hosts` with its count, most common first.
+fn type_counts(hosts: &[Host]) -> Vec<(DeviceType, u32)> {
+    let mut counts: Vec<(DeviceType, u32)> = Vec::new();
+    for host in hosts {
+        match counts.iter_mut().find(|(t, _)| *t == host.device_type) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((host.device_type, 1)),
+        }
+    }
+    counts.sort_by_key(|(t, n)| {
+        let order = labels::ALL_TYPES
+            .iter()
+            .position(|x| x == t)
+            .unwrap_or(usize::MAX);
+        (std::cmp::Reverse(*n), order)
+    });
+    counts
 }
 
 struct ContentWidgets {
@@ -2228,10 +2635,7 @@ fn build_content(table: &Table) -> (gtk::Widget, ContentWidgets) {
         .build();
     stack.add_named(&no_results, Some("no-results"));
 
-    let scroller = gtk::ScrolledWindow::new();
-    scroller.set_child(Some(&table.view));
-    scroller.set_vexpand(true);
-    stack.add_named(&scroller, Some("table"));
+    stack.add_named(&table.widget, Some("table"));
     stack.set_visible_child_name("empty");
 
     (stack.clone().upcast(), ContentWidgets { stack, no_results })
