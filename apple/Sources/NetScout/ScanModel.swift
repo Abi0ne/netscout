@@ -271,7 +271,13 @@ final class ScanModel {
         scannedTarget = targets.joined(separator: ", ")
         scannedProfile = profile
         scannedVLAN = vlan
+        // Every new scan starts from "Tutti", whatever was picked before.
+        typeFilter = nil
         segmentFilter = nil
+        scanSelection = nil
+        // Deep scans of the previous scan's devices report to the old
+        // generation, so their end would never clear the button.
+        deepScanning = []
         let observer = ObserverBridge { [weak self] event in
             self?.apply(event, generation: gen)
         }
